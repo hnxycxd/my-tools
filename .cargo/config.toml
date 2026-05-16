@@ -1,0 +1,13 @@
+# 当无法访问 crates.io（如 DNS 无法解析 static.crates.io）时，可改用国内镜像源拉取依赖。
+# 若你网络可直接访问官方源，可删除本文件或注释下方 [source] 段。
+# 说明：https://mirrors.ustc.edu.cn/help/crates.io-index.html
+
+[source.crates-io]
+replace-with = "ustc"
+
+[source.ustc]
+registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"
+
+# 部分网络下 HTTP/2 会报 Stream PROTOCOL_ERROR，关闭多路复用可改用 HTTP/1.1 重试
+[http]
+multiplexing = false

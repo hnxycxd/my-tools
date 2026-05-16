@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+/* 速开小窗背景透明；管理页由根组件铺底色 */
+body {
+  @apply antialiased;
+  background-color: transparent;
+}

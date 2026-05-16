@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>关于</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #fff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      color: #333;
+    }
+    .about-container {
+      text-align: center;
+      padding: 32px;
+      max-width: 360px;
+    }
+    .app-name {
+      font-size: 24px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: #1a1a1a;
+    }
+    .info-row {
+      font-size: 14px;
+      line-height: 2;
+      color: #666;
+    }
+    .info-label {
+      color: #999;
+      margin-right: 8px;
+    }
+    .close-btn {
+      margin-top: 24px;
+      padding: 6px 24px;
+      font-size: 14px;
+      border: 1px solid #d9d9d9;
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .close-btn:hover {
+      border-color: #1677ff;
+      color: #1677ff;
+    }
+    .error { color: #ff4d4f; font-size: 12px; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <div class="about-container">
+    <div class="app-name" id="appName">c-tools</div>
+    <div class="info-row"><span class="info-label">版本：</span><span id="appVersion">加载中...</span></div>
+    <div class="info-row"><span class="info-label">作者：</span><span id="appAuthor">加载中...</span></div>
+    <div id="errorMsg" class="error" style="display:none;"></div>
+    <button class="close-btn" id="closeBtn">确定</button>
+  </div>
+  <script>
+    function closeWindow() {
+      if (window.__TAURI__ && window.__TAURI__.window) {
+        const { getCurrentWindow } = window.__TAURI__.window;
+        getCurrentWindow().close();
+      }
+    }
+
+    document.getElementById('closeBtn').addEventListener('click', closeWindow);
+
+    (function() {
+      const tauriCore = window.__TAURI__ && window.__TAURI__.core;
+      if (!tauriCore) {
+        showError('Tauri API 不可用，请确保在 Tauri 窗口中打开此页面');
+        return;
+      }
+
+      const { invoke } = tauriCore;
+      invoke('get_about_info')
+        .then(function(info) {
+          console.log('get_about_info result:', info);
+          document.getElementById('appName').textContent = info.name || 'c-tools';
+          document.getElementById('appVersion').textContent = info.version || '未知';
+          document.getElementById('appAuthor').textContent = info.author || '未知';
+        })
+        .catch(function(err) {
+          console.error('get_about_info failed:', err);
+          showError('获取信息失败: ' + (err.message || JSON.stringify(err)));
+          document.getElementById('appVersion').textContent = '获取失败';
+          document.getElementById('appAuthor').textContent = '获取失败';
+        });
+    })();
+
+    function showError(msg) {
+      var el = document.getElementById('errorMsg');
+      el.style.display = 'block';
+      el.textContent = msg;
+    }
+  </script>
+</body>
+</html>

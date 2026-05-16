@@ -1,20 +1,52 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "my-tools",
+  "productName": "c-tools",
   "version": "0.1.0",
   "identifier": "com.hnxyc.my-tools",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build:web",
     "frontendDist": "../dist"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
-        "title": "my-tools",
+        "label": "palette",
+        "title": "网页快开",
+        "url": "index.html",
         "width": 800,
-        "height": 600
+        "height": 560,
+        "visible": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "resizable": false,
+        "maximized": false,
+        "skipTaskbar": true,
+        "transparent": true,
+        "shadow": false
+      },
+      {
+        "label": "admin",
+        "title": "管理收藏",
+        "url": "index.html",
+        "width": 1000,
+        "height": 720,
+        "visible": false,
+        "resizable": true,
+        "center": true
+      },
+      {
+        "label": "about",
+        "title": "关于",
+        "url": "about.html",
+        "width": 400,
+        "height": 280,
+        "visible": false,
+        "resizable": false,
+        "center": true,
+        "decorations": true
       }
     ],
     "security": {
@@ -23,7 +55,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": "nsis",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
