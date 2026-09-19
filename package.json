@@ -1,13 +1,14 @@
 {
   "name": "my-tools",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "author": "chengxudong",
   "scripts": {
     "start": "tauri dev",
     "dev": "vite",
-    "build:web": "vite build",
+    "sync-version": "node ./scripts/sync-version.mjs",
+    "build:web": "npm run sync-version && vite build",
     "build:tauri": "tauri build",
     "build": "node ./scripts/build-win-portable.mjs",
     "preview": "vite preview",
@@ -24,6 +25,7 @@
     "antd": "^5.25.0",
     "dayjs": "^1.11.13",
     "lucide-react": "^0.511.0",
+    "pinyin-pro": "^3.29.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "tailwindcss": "^4.2.4"

@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { match as pinyinMatch } from 'pinyin-pro'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppEntry } from '../types/app'
 import type { FavoriteItem } from '../types/favorite'
@@ -20,6 +21,20 @@ function looksLikeUrl(s: string): boolean {
 
 function normalizeUrl(s: string): string {
   return /^[a-z]+:\/\//i.test(s) ? s : `https://${s}`
+}
+
+/**
+ * 关键字是否命中名称：字面子串（英文名如 QQ、VSCode）或拼音/首字母（wx、weixin → 微信）。
+ * 返回是否命中以及是否从首字符命中（用于前缀优先排序）；pinyin-pro match 无命中返回 null。
+ * 统一在小写形态上匹配，保证下标一致且对 ASCII 名称大小写不敏感。
+ */
+function nameMatch(name: string, k: string): { hit: boolean; fromStart: boolean } {
+  const n = name.toLowerCase()
+  const py = pinyinMatch(n, k)
+  if (n.includes(k) || (py && py.length > 0)) {
+    return { hit: true, fromStart: n.startsWith(k) || (!!py && py[0] === 0) }
+  }
+  return { hit: false, fromStart: false }
 }
 
 /** 把 `Alt+Space` 转成键帽数组 */
@@ -74,7 +89,7 @@ export function PaletteView() {
       .catch(() => {})
   }, [])
 
-  /** 标题或 URL 含关键字即命中；标题命中的项排在仅 URL 命中的项之前，组内保持原列表顺序 */
+  /** 标题（含拼音/首字母）或 URL 含关键字即命中；标题命中的项排在仅 URL 命中的项之前，组内保持原列表顺序 */
   const filtered = useMemo(() => {
     const k = raw.trim().toLowerCase()
     if (k.length === 0) {
@@ -85,7 +100,7 @@ export function PaletteView() {
     for (const it of items) {
       const t = it.title.toLowerCase()
       const u = it.url.toLowerCase()
-      if (t.includes(k)) {
+      if (t.includes(k) || pinyinMatch(t, k)) {
         titleHits.push(it)
       } else if (u.includes(k)) {
         urlOnly.push(it)
@@ -103,10 +118,10 @@ export function PaletteView() {
     const starts: AppEntry[] = []
     const incl: AppEntry[] = []
     for (const a of apps) {
-      const n = a.name.toLowerCase()
-      if (n.startsWith(k)) {
+      const m = nameMatch(a.name, k)
+      if (m.fromStart) {
         starts.push(a)
-      } else if (n.includes(k)) {
+      } else if (m.hit) {
         incl.push(a)
       }
     }

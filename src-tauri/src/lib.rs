@@ -301,17 +301,16 @@ fn relaunch_app(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn get_about_info() -> Result<AboutInfo, String> {
-  eprintln!("[about] PACKAGE_JSON len={}", PACKAGE_JSON.len());
-  eprintln!("[about] PACKAGE_JSON head={}", &PACKAGE_JSON[..200.min(PACKAGE_JSON.len())]);
+fn get_about_info(app: tauri::AppHandle) -> Result<AboutInfo, String> {
+  // 版本号单一来源是根目录 package.json：tauri.conf.json 的 version 字段指向该文件，
+  // 构建期写入 package_info，运行期直接读取，避免多处手维护导致「关于」显示旧版本
+  let pkg = app.package_info();
   let val: serde_json::Value = serde_json::from_str(PACKAGE_JSON).map_err(|e| e.to_string())?;
-  eprintln!("[about] parsed: name={:?}, version={:?}, author={:?}",
-    val.get("name"), val.get("version"), val.get("author"));
-  let name = val["name"].as_str().unwrap_or("my-tools").to_string();
-  let version = val["version"].as_str().unwrap_or("0.0.0").to_string();
-  let author = val["author"].as_str().unwrap_or("").to_string();
-  eprintln!("[about] returning: name={}, version={}, author={}", name, version, author);
-  Ok(AboutInfo { name, version, author })
+  Ok(AboutInfo {
+    name: pkg.name.clone(),
+    version: pkg.version.to_string(),
+    author: val["author"].as_str().unwrap_or("").to_string(),
+  })
 }
 
 #[tauri::command]
