@@ -2209,7 +2209,9 @@ dependencies = [
 name = "my-tools"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
+ "image",
  "regex",
  "serde",
  "serde_json",
@@ -2220,6 +2222,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-opener",
  "thiserror 1.0.69",
+ "windows",
 ]
 
 [[package]]

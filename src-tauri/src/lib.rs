@@ -1,3 +1,4 @@
+mod apps;
 mod storage;
 
 use std::sync::Mutex;
@@ -329,6 +330,33 @@ fn hide_palette_cmd(app: tauri::AppHandle) -> Result<(), String> {
   hide_palette(&app)
 }
 
+/// 提取应用图标：只为当前命中的应用行调用，进程内缓存命中后零开销
+#[tauri::command]
+async fn get_app_icon_cmd(
+  state: tauri::State<'_, AppIconCache>,
+  target: String,
+) -> Result<Option<String>, String> {
+  if let Some(hit) = state.0.lock().map_err(|e| e.to_string())?.get(&target) {
+    return Ok(hit.clone());
+  }
+  let target_for_extract = target.clone();
+  let uri = tauri::async_runtime::spawn_blocking(move || {
+    #[cfg(target_os = "windows")]
+    {
+      apps::extract_icon_data_uri(&target_for_extract)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+      let _ = &target_for_extract;
+      None
+    }
+  })
+  .await
+  .map_err(|e| format!("提取应用图标失败: {e}"))?;
+  state.0.lock().map_err(|e| e.to_string())?.insert(target, uri.clone());
+  Ok(uri)
+}
+
 /// 关闭关于窗口：由 `about.html` 的「确定」按钮调用，统一走 Rust 侧窗口管理，避免前端 API 差异导致按钮失效。
 #[tauri::command]
 fn hide_about_cmd(app: tauri::AppHandle) -> Result<(), String> {
@@ -341,6 +369,49 @@ fn hide_about_cmd(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn show_admin_cmd(app: tauri::AppHandle) -> Result<(), String> {
   show_admin(&app)
+}
+
+/// 进程内应用图标缓存：快捷方式路径 → PNG data URI（失败也缓存，避免重复 COM 开销）
+pub struct AppIconCache(Mutex<std::collections::HashMap<String, Option<String>>>);
+
+/// 本机应用扫描结果缓存：扫描需逐个解析快捷方式目标，5 分钟内复用
+pub struct AppsState(Mutex<Option<(std::time::Instant, Vec<apps::AppEntry>)>>);
+
+const APPS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// 扫描开始菜单快捷方式，供速开窗搜索本机应用；放阻塞线程池，避免拖慢窗口
+#[tauri::command]
+async fn list_installed_apps_cmd(
+  state: tauri::State<'_, AppsState>,
+) -> Result<Vec<apps::AppEntry>, String> {
+  if let Some((at, list)) = state.0.lock().map_err(|e| e.to_string())?.as_ref() {
+    if at.elapsed() < APPS_CACHE_TTL {
+      return Ok(list.clone());
+    }
+  }
+  let list = tauri::async_runtime::spawn_blocking(apps::scan_installed_apps)
+    .await
+    .map_err(|e| format!("扫描本机应用失败: {e}"))?;
+  *state.0.lock().map_err(|e| e.to_string())? = Some((std::time::Instant::now(), list.clone()));
+  Ok(list)
+}
+
+/// 启动本机应用：explorer 解析 .lnk 后按双击语义启动，目标窗口能正常拿到前台
+#[tauri::command]
+fn launch_app_cmd(target: String) -> Result<(), String> {
+  #[cfg(target_os = "windows")]
+  {
+    std::process::Command::new("explorer.exe")
+      .arg(&target)
+      .spawn()
+      .map_err(|e| e.to_string())?;
+    return Ok(());
+  }
+  #[cfg(not(target_os = "windows"))]
+  {
+    let _ = target;
+    Err("启动本机应用仅支持 Windows".into())
+  }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -362,6 +433,8 @@ pub fn run() {
 
       let favorites = load_or_init_favorites(&dir).map_err(|e| e.to_string())?;
       app.manage(FavoritesState(Mutex::new(favorites)));
+      app.manage(AppIconCache(Mutex::new(std::collections::HashMap::new())));
+      app.manage(AppsState(Mutex::new(None)));
 
       let cfg = load_or_init_app_config(&dir).map_err(|e| e.to_string())?;
       let _ = sync_autostart_with_config(&app.handle(), cfg.autostart);
@@ -443,6 +516,9 @@ pub fn run() {
       hide_palette_cmd,
       hide_about_cmd,
       show_admin_cmd,
+      list_installed_apps_cmd,
+      launch_app_cmd,
+      get_app_icon_cmd,
     ])
     // 管理窗和关于窗点右上角关闭会销毁 Webview，导致后续无法再打开；改为仅隐藏保留实例
     .on_window_event(|window, event| {
