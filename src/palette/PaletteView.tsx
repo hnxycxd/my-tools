@@ -3,16 +3,43 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FavoriteItem } from '../types/favorite'
 import { isTauriWebview } from '../utils/tauriEnv'
+import { PREVIEW_CONFIG, PREVIEW_FAVORITES } from '../utils/previewData'
+import { Seal } from '../components/Seal'
 
-type PaletteRow = { kind: 'fav'; item: FavoriteItem } | { kind: 'bing' }
+type PaletteRow =
+  | { kind: 'fav'; item: FavoriteItem }
+  | { kind: 'web'; url: string; title: string; subtitle: string }
+  | { kind: 'cmd'; title: string; subtitle: string }
+
+/** 裸域名或完整 URL 视为网址，直接打开而非送去搜索 */
+function looksLikeUrl(s: string): boolean {
+  return /^https?:\/\/\S+$/i.test(s) || /^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?(\/\S*)?$/i.test(s)
+}
+
+function normalizeUrl(s: string): string {
+  return /^[a-z]+:\/\//i.test(s) ? s : `https://${s}`
+}
+
+/** 把 `Alt+Space` 转成键帽数组 */
+function shortcutParts(raw: string): string[] {
+  return raw
+    .split('+')
+    .map((p) => p.trim())
+    .filter(Boolean)
+}
 
 /**
- * 速开：紧凑置顶窗口（无全屏蒙层），失焦即关；输入框 + 收藏过滤 + 必应快捷项
+ * 速开：紧凑置顶窗口（无全屏蒙层），失焦即关。
+ * 深墨面板 + 玉色点缀；输入过滤收藏，支持网址直达与必应搜索，底部常驻键位提示。
  */
 export function PaletteView() {
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const listRef = useRef<HTMLUListElement | null>(null)
   const [raw, setRaw] = useState('')
   const [filterKey, setFilterKey] = useState('')
+  /** 每次窗口被唤起时 +1，重放入场动画 */
+  const [popKey, setPopKey] = useState(0)
+  const [shortcutLabel, setShortcutLabel] = useState('')
 
   const [items, setItems] = useState<FavoriteItem[]>([])
   const [sel, setSel] = useState(0)
@@ -30,14 +57,18 @@ export function PaletteView() {
   }, [filterKey])
 
   const load = useCallback(() => {
-    // 浏览器直连 Vite 时无 Rust 侧 command，不能调用 invoke
     if (!isTauriWebview()) {
-      setItems([])
+      setItems(PREVIEW_FAVORITES)
+      setShortcutLabel(PREVIEW_CONFIG.global_shortcut)
       return
     }
-    void invoke<FavoriteItem[]>('get_favorites_snapshot')
+    // 直接读磁盘最新数据，避免仅依赖启动快照导致跨机器/长驻进程不一致
+    void invoke<FavoriteItem[]>('get_favorites_from_disk')
       .then((list) => setItems(list))
       .catch(console.error)
+    void invoke<{ global_shortcut: string }>('get_app_config_cmd')
+      .then((c) => setShortcutLabel(c.global_shortcut))
+      .catch(() => {})
   }, [])
 
   /** 标题或 URL 含关键字即命中；标题命中的项排在仅 URL 命中的项之前，组内保持原列表顺序 */
@@ -60,18 +91,44 @@ export function PaletteView() {
     return [...titleHits, ...urlOnly]
   }, [items, filterKey])
 
-  /** 有输入且非内置命令时，列表底部固定展示「必应搜索」 */
   const trimmedRaw = raw.trim()
-  const showBingRow = trimmedRaw.length > 0 && trimmedRaw !== '/admin' && trimmedRaw !== '/reload'
+  /** 命令统一小写比较，避免大小写输入差异导致命令不生效 */
+  const normalizedCommand = trimmedRaw.toLowerCase()
+  /** `admin` 为最高优先级命令，命令态不展示书签与搜索 */
+  const isAdminCommand = normalizedCommand === 'admin'
+  const typing = trimmedRaw.length > 0
+  const rawLooksUrl = typing && looksLikeUrl(trimmedRaw)
 
   const rows: PaletteRow[] = useMemo(() => {
-    if (!showBingRow) {
-      return []
+    if (isAdminCommand) {
+      return [
+        {
+          kind: 'cmd',
+          title: '打开管理窗口',
+          subtitle: '命令 admin · 新增、编辑、导入导出收藏',
+        },
+      ]
     }
     const r: PaletteRow[] = filtered.map((item) => ({ kind: 'fav' as const, item }))
-    r.push({ kind: 'bing' })
+    if (typing) {
+      if (rawLooksUrl) {
+        r.push({
+          kind: 'web',
+          url: normalizeUrl(trimmedRaw),
+          title: '打开网址',
+          subtitle: normalizeUrl(trimmedRaw),
+        })
+      } else {
+        r.push({
+          kind: 'web',
+          url: `https://cn.bing.com/search?q=${encodeURIComponent(trimmedRaw)}`,
+          title: `用必应搜索 “${trimmedRaw}”`,
+          subtitle: `cn.bing.com/search?q=${trimmedRaw}`,
+        })
+      }
+    }
     return r
-  }, [filtered, showBingRow])
+  }, [filtered, typing, rawLooksUrl, trimmedRaw, isAdminCommand])
 
   const selSafe = rows.length === 0 ? 0 : Math.min(sel, rows.length - 1)
 
@@ -83,6 +140,11 @@ export function PaletteView() {
       setSel(rows.length - 1)
     }
   }, [rows.length, sel])
+
+  /** 键盘预选时保证可见（鼠标 hover 也会触发，block: nearest 无副作用） */
+  useEffect(() => {
+    listRef.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest' })
+  }, [selSafe, rows.length])
 
   /** 关闭时清空输入与选中，并由后端隐藏 palette 窗口 */
   const hide = useCallback(async () => {
@@ -121,11 +183,28 @@ export function PaletteView() {
     [hide],
   )
 
-  const openBingForCurrentInput = useCallback(() => {
-    const q = raw.trim()
-    const url = `https://cn.bing.com/search?q=${encodeURIComponent(q)}`
-    tryOpen(url)
-  }, [raw, tryOpen])
+  const activateRow = useCallback(
+    (row: PaletteRow | undefined) => {
+      if (!row) {
+        return
+      }
+      if (row.kind === 'fav') {
+        tryOpen(row.item.url)
+      } else if (row.kind === 'web') {
+        tryOpen(row.url)
+      } else if (row.kind === 'cmd') {
+        if (isTauriWebview()) {
+          void invoke('show_admin_cmd').catch(console.error)
+        } else {
+          const next = new URL(window.location.href)
+          next.searchParams.set('view', 'admin')
+          window.location.assign(next.toString())
+        }
+        void hide().catch(console.error)
+      }
+    },
+    [tryOpen, hide],
+  )
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
@@ -146,35 +225,7 @@ export function PaletteView() {
       }
     } else if (e.key === 'Enter') {
       e.preventDefault()
-      const t = raw.trim()
-      if (t === '/admin') {
-        if (isTauriWebview()) {
-          void invoke('show_admin_cmd')
-          void hide().catch(console.error)
-        } else {
-          // 与 AppRoot 的 `?view=admin` 约定一致，整页切到管理页
-          const next = new URL(window.location.href)
-          next.searchParams.set('view', 'admin')
-          window.location.assign(next.toString())
-        }
-        return
-      }
-      if (t === '/reload') {
-        if (isTauriWebview()) {
-          void invoke('relaunch_app')
-        } else {
-          window.location.reload()
-        }
-        return
-      }
-      if (rows.length > 0) {
-        const row = rows[selSafe]
-        if (row?.kind === 'fav') {
-          tryOpen(row.item.url)
-        } else if (row?.kind === 'bing') {
-          openBingForCurrentInput()
-        }
-      }
+      activateRow(rows[selSafe])
     }
   }
 
@@ -238,6 +289,9 @@ export function PaletteView() {
     void w
       .listen('tauri://focus', () => {
         ignoreBlurUntil.current = Date.now() + blurGraceMs
+        // 每次窗口被唤起都刷新一次书签与配置，保证命中最新数据
+        load()
+        setPopKey((k) => k + 1)
         focusInput()
       })
       .then((u) => {
@@ -249,7 +303,7 @@ export function PaletteView() {
       unlistenBlur?.()
       unlistenFocus?.()
     }
-  }, [hide])
+  }, [hide, load])
 
   /** 点在窗口内但不在搜索条/下拉上时关闭（仅靠 blur 无法覆盖窗内透明区） */
   const onBackdropPointerDown = (e: React.PointerEvent) => {
@@ -264,78 +318,187 @@ export function PaletteView() {
     void hide()
   }
 
+  const shortcutChips = shortcutParts(shortcutLabel)
+
   return (
     <div
       className='fixed inset-0 box-border flex flex-col px-2 pb-3 pt-2'
       onPointerDown={onBackdropPointerDown}
     >
       <div
+        key={popKey}
         data-palette-chrome=''
-        className='shrink-0 overflow-hidden rounded-xl bg-stone-200/95 text-stone-900 shadow-sm ring-1 ring-stone-300/50'
+        className='palette-pop shrink-0 overflow-hidden rounded-2xl bg-ink-900/[0.985] shadow-2xl shadow-black/40 ring-1 ring-white/[0.08]'
       >
-        <div className='flex h-12 items-stretch'>
+        {/* 搜索条 */}
+        <div className='flex h-[54px] items-center gap-3 px-4'>
+          <span aria-hidden className='h-2.5 w-2.5 shrink-0 rotate-45 rounded-[3px] bg-jade-400' />
           <input
             ref={inputRef}
-            className='min-w-0 flex-1 border-0 bg-transparent px-3 text-sm outline-none ring-0'
+            className='min-w-0 flex-1 border-0 bg-transparent text-[15px] text-fog-50 caret-jade-300 outline-none ring-0 placeholder:text-fog-600'
             value={raw}
             autoFocus
+            spellCheck={false}
             onChange={(e) => setRaw(e.currentTarget.value)}
             onKeyDown={onKeyDown}
           />
+          {shortcutChips.length > 0 ? (
+            <div aria-hidden className='hidden shrink-0 items-center gap-1 sm:flex'>
+              {shortcutChips.map((p) => (
+                <kbd key={p} className='kbd-dark'>
+                  {p}
+                </kbd>
+              ))}
+            </div>
+          ) : null}
         </div>
-        {raw.trim() === '/admin' || raw.trim() === '/reload' ? (
-          <div className='border-t border-stone-300/60 px-3 py-2 text-xs text-stone-500'>
-            回车以执行：{raw.trim()}
+
+        {/* 命令态提示 */}
+        {isAdminCommand ? (
+          <div className='border-t border-white/[0.06] px-4 py-2 text-xs text-fog-500'>
+            回车打开管理窗口，收藏在这里维护
           </div>
         ) : null}
-      </div>
 
-      {rows.length > 0 ? (
-        <ul
-          data-palette-chrome=''
-          className='mt-1 max-h-[min(60vh,420px)] w-full shrink-0 overflow-y-auto overflow-x-hidden rounded-xl bg-stone-200/90 py-1 text-sm shadow ring-1 ring-stone-300/50'
-        >
-          {rows.map((row, idx) => {
-            const active = idx === selSafe
-            if (row.kind === 'fav') {
-              const it = row.item
-              const rowKey = `${it.addTime}__${it.title}__${it.url}`
+        {/* 空收藏引导：还没加过任何收藏时给出方向 */}
+        {!typing && items.length === 0 ? (
+          <div className='border-t border-white/[0.06] px-4 py-4'>
+            <div className='text-[13px] font-medium text-fog-300'>还没有收藏</div>
+            <div className='mt-1 text-xs leading-relaxed text-fog-600'>
+              输入 <span className='font-mono text-fog-400'>admin</span>{' '}
+              并回车打开管理窗口，把常用网址加进来；现在也可以直接输入网址打开。
+            </div>
+          </div>
+        ) : null}
+
+        {/* 候选列表 */}
+        {rows.length > 0 ? (
+          <ul
+            key={filterKey + (isAdminCommand ? '#cmd' : '')}
+            ref={listRef}
+            data-palette-chrome=''
+            className='palette-list max-h-[min(52vh,380px)] w-full shrink-0 overflow-y-auto overflow-x-hidden border-t border-white/[0.06] px-2 py-2 text-sm'
+          >
+            {rows.map((row, idx) => {
+              const active = idx === selSafe
+              const isSynthetic = row.kind !== 'fav'
+              const prevIsFav = idx > 0 && rows[idx - 1].kind === 'fav'
               return (
                 <li
-                  key={rowKey}
-                  className={
-                    'cursor-pointer px-3 py-2 ' +
-                    (active ? 'bg-stone-400/80' : 'hover:bg-stone-300/60')
+                  key={
+                    row.kind === 'fav'
+                      ? `${row.item.addTime}__${row.item.title}__${row.item.url}`
+                      : `${row.kind}__${row.subtitle}`
                   }
-                  onMouseEnter={() => setSel(idx)}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => tryOpen(it.url)}
+                  className={
+                    isSynthetic && prevIsFav
+                      ? 'mt-1.5 border-t border-white/[0.06] pt-1.5'
+                      : 'mt-0.5 first:mt-0'
+                  }
                 >
-                  <div className='truncate font-medium'>{it.title}</div>
-                  <div className='truncate text-xs text-stone-600'>{it.url}</div>
+                  <div
+                    data-active={active || undefined}
+                    role='button'
+                    tabIndex={-1}
+                    className={
+                      'row-in flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 transition-colors duration-75 ' +
+                      (active ? 'bg-ink-700' : 'hover:bg-ink-800/70')
+                    }
+                    onMouseEnter={() => setSel(idx)}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => activateRow(row)}
+                  >
+                    {row.kind === 'fav' ? (
+                      <Seal
+                        url={row.item.url}
+                        title={row.item.title}
+                        variant='dark'
+                        className='h-8 w-8 rounded-[9px] text-[13px]'
+                      />
+                    ) : (
+                      <span
+                        aria-hidden
+                        className={
+                          'flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] ' +
+                          (row.kind === 'cmd'
+                            ? 'bg-jade-400/15 text-jade-300 ring-1 ring-jade-400/25'
+                            : 'bg-white/[0.06] text-fog-400 ring-1 ring-white/[0.08]')
+                        }
+                      >
+                        <svg
+                          width='14'
+                          height='14'
+                          viewBox='0 0 24 24'
+                          fill='none'
+                          stroke='currentColor'
+                          strokeWidth='2'
+                          strokeLinecap='round'
+                          strokeLinejoin='round'
+                        >
+                          {row.kind === 'cmd' ? (
+                            <path d='M4 6h16M4 12h16M4 18h10' />
+                          ) : rawLooksUrl ? (
+                            <>
+                              <path d='M15 3h6v6' />
+                              <path d='M10 14 21 3' />
+                              <path d='M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6' />
+                            </>
+                          ) : (
+                            <>
+                              <circle cx='11' cy='11' r='7' />
+                              <path d='m20 20-3.5-3.5' />
+                            </>
+                          )}
+                        </svg>
+                      </span>
+                    )}
+                    <div className='min-w-0 flex-1'>
+                      <div className='truncate text-[13.5px] font-medium leading-5 text-fog-50'>
+                        {row.kind === 'fav' ? row.item.title : row.title}
+                      </div>
+                      <div className='truncate font-mono text-[11px] leading-4 text-fog-500'>
+                        {row.kind === 'fav' ? row.item.url : row.subtitle}
+                      </div>
+                    </div>
+                    {active ? (
+                      <kbd aria-hidden className='kbd-dark shrink-0'>
+                        ↵
+                      </kbd>
+                    ) : null}
+                  </div>
                 </li>
               )
-            }
-            return (
-              <li
-                key='bing-search-synthetic'
-                className={
-                  'cursor-pointer px-3 py-2 ' +
-                  (active ? 'bg-stone-400/80' : 'hover:bg-stone-300/60')
-                }
-                onMouseEnter={() => setSel(idx)}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => openBingForCurrentInput()}
-              >
-                <div className='truncate font-medium'>必应搜索</div>
-                <div className='truncate text-xs text-stone-600'>
-                  https://cn.bing.com/search?q={encodeURIComponent(trimmedRaw)}
-                </div>
-              </li>
-            )
-          })}
-        </ul>
-      ) : null}
+            })}
+          </ul>
+        ) : null}
+
+        {/* 键位提示条 */}
+        {/* <div
+          data-palette-chrome=''
+          className='flex h-9 items-center justify-between gap-4 border-t border-white/[0.06] px-4'
+        >
+          <div className='flex min-w-0 items-center gap-3 text-[11px] text-fog-600'>
+            {rows.length > 0 ? (
+              <>
+                <span className='flex items-center gap-1.5'>
+                  <kbd className='kbd-dark'>↑↓</kbd>选择
+                </span>
+                <span className='flex items-center gap-1.5'>
+                  <kbd className='kbd-dark'>↵</kbd>打开
+                </span>
+                <span className='flex items-center gap-1.5'>
+                  <kbd className='kbd-dark'>esc</kbd>清空 / 关闭
+                </span>
+              </>
+            ) : (
+              <span>输入以搜索收藏或直达网址，admin 打开管理</span>
+            )}
+          </div>
+          <div className='shrink-0 font-mono text-[11px] text-fog-600'>
+            {items.length} 条收藏
+          </div>
+        </div> */}
+      </div>
     </div>
   )
 }

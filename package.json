@@ -1,5 +1,5 @@
 {
-  "name": "c-tools",
+  "name": "my-tools",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -8,7 +8,8 @@
     "start": "tauri dev",
     "dev": "vite",
     "build:web": "vite build",
-    "build": "tauri build",
+    "build:tauri": "tauri build",
+    "build": "node ./scripts/build-win-portable.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "zip:win": "powershell -ExecutionPolicy Bypass -File ./scripts/zip-win.ps1"

@@ -1,17 +1,14 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { open, save } from "@tauri-apps/plugin-dialog";
-import { isEnabled } from "@tauri-apps/plugin-autostart";
-import { App, ConfigProvider, Modal, theme } from "antd";
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
+import { open, save } from '@tauri-apps/plugin-dialog'
+import { isEnabled } from '@tauri-apps/plugin-autostart'
+import { App, ConfigProvider, Modal, Popconfirm, theme } from 'antd'
 import {
   Bookmark,
-  Clock,
+  Copy,
   Download,
   Edit2,
   ExternalLink,
-  Github,
-  HelpCircle,
-  Info,
   Keyboard,
   Plus,
   Power,
@@ -20,544 +17,600 @@ import {
   Trash2,
   Upload,
   X,
-} from "lucide-react";
-import dayjs from "dayjs";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AppConfig, FavoriteItem } from "../types/favorite";
-import { isTauriWebview } from "../utils/tauriEnv";
-import pkg from "../../package.json";
+} from 'lucide-react'
+import dayjs from 'dayjs'
+import relativeTime from 'dayjs/plugin/relativeTime'
+import 'dayjs/locale/zh-cn'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { AppConfig, FavoriteItem } from '../types/favorite'
+import { isTauriWebview } from '../utils/tauriEnv'
+import { PREVIEW_CONFIG, PREVIEW_FAVORITES } from '../utils/previewData'
+import { Seal } from '../components/Seal'
+import pkg from '../../package.json'
 
-/** 管理页分区：与 Figma Make 侧栏一致 */
-type AdminSection = "general" | "bookmarks";
+dayjs.extend(relativeTime)
+dayjs.locale('zh-cn')
+
+/** 管理页分区 */
+type AdminSection = 'general' | 'bookmarks'
 
 /**
  * 侧栏与按钮展示用：将磁盘中的 `Alt+Space` 转为更易读的 `Alt + Space`
  */
 function formatShortcutLabel(raw: string): string {
-  const t = raw.trim();
+  const t = raw.trim()
   if (!t) {
-    return "例如 Alt + Space";
+    return '例如 Alt + Space'
   }
-  return t.split("+").join(" + ");
+  return t.split('+').join(' + ')
+}
+
+/** 快捷键字符串 → 键帽数组 */
+function shortcutChips(raw: string): string[] {
+  return raw
+    .split('+')
+    .map((p) => p.trim())
+    .filter(Boolean)
+}
+
+/** 相对时间（悬停可见完整时间戳）；解析失败时回退原文 */
+function relativeFrom(addTime: string): string {
+  const d = dayjs(addTime)
+  return d.isValid() ? d.fromNow() : addTime
 }
 
 /**
  * 从 keydown 解析 global-hotkey 字符串（与 `app.json` / global-hotkey 的 Code 命名一致，如 Alt+Space、Ctrl+Shift+KeyA）
  * @returns 合法组合键；`null` 表示用户按 Esc 取消；`""` 表示仅修饰键、忽略本次 keydown
  */
-function parseHotkeyFromKeydown(e: KeyboardEvent): string | null | "" {
-  if (e.key === "Escape") {
-    return null;
+function parseHotkeyFromKeydown(e: KeyboardEvent): string | null | '' {
+  if (e.key === 'Escape') {
+    return null
   }
-  if (e.key === "Control" || e.key === "Alt" || e.key === "Shift" || e.key === "Meta") {
-    return "";
+  if (e.key === 'Control' || e.key === 'Alt' || e.key === 'Shift' || e.key === 'Meta') {
+    return ''
   }
-  const mods: string[] = [];
+  const mods: string[] = []
   if (e.ctrlKey) {
-    mods.push("Ctrl");
+    mods.push('Ctrl')
   }
   if (e.altKey) {
-    mods.push("Alt");
+    mods.push('Alt')
   }
   if (e.shiftKey) {
-    mods.push("Shift");
+    mods.push('Shift')
   }
   if (e.metaKey) {
-    mods.push("Super");
+    mods.push('Super')
   }
   if (mods.length === 0) {
-    return "__INVALID_NO_MODIFIER__";
+    return '__INVALID_NO_MODIFIER__'
   }
-  const main = e.code;
+  const main = e.code
   if (!main) {
-    return "__INVALID_NO_MODIFIER__";
+    return '__INVALID_NO_MODIFIER__'
   }
-  return [...mods, main].join("+");
+  return [...mods, main].join('+')
 }
 
 /**
- * 管理页：侧栏 + 常规设置 / 书签管理；逻辑与原先一致，仅样式与交互对齐设计稿
+ * 管理页：纸面工作台 + 墨色按钮 + 玉色点缀；业务逻辑与原版一致
  */
 export function AdminView() {
-  const { message: messageFromHook } = App.useApp();
+  const { message: messageFromHook } = App.useApp()
   useEffect(() => {
     if (!window.messageApi) {
-      window.messageApi = messageFromHook;
+      window.messageApi = messageFromHook
     }
-  }, [messageFromHook]);
+  }, [messageFromHook])
 
-  const [dataDir, setDataDir] = useState<string>("");
-  const [favorites, setFavorites] = useState<FavoriteItem[]>([]);
-  const [config, setConfig] = useState<AppConfig | null>(null);
-  const [q, setQ] = useState("");
+  const [dataDir, setDataDir] = useState<string>('')
+  const [favorites, setFavorites] = useState<FavoriteItem[]>([])
+  const [config, setConfig] = useState<AppConfig | null>(null)
+  const [q, setQ] = useState('')
 
-  const [draftTitle, setDraftTitle] = useState("");
-  const [draftUrl, setDraftUrl] = useState("");
+  const [draftTitle, setDraftTitle] = useState('')
+  const [draftUrl, setDraftUrl] = useState('')
   /** 正在编辑的原记录（以 addTime+title+url 定位） */
-  const [editing, setEditing] = useState<FavoriteItem | null>(null);
+  const [editing, setEditing] = useState<FavoriteItem | null>(null)
   /** 书签添加/编辑弹层 */
-  const [bookmarkModalOpen, setBookmarkModalOpen] = useState(false);
+  const [bookmarkModalOpen, setBookmarkModalOpen] = useState(false)
   /** 当前侧栏选中的分区 */
-  const [section, setSection] = useState<AdminSection>("general");
-  /** 是否正在录入全局快捷键（Figma 式按键捕获） */
-  const [shortcutRecording, setShortcutRecording] = useState(false);
+  const [section, setSection] = useState<AdminSection>('general')
+  /** 是否正在录入全局快捷键（按键捕获） */
+  const [shortcutRecording, setShortcutRecording] = useState(false)
   /** 录入开始时由 Rust 注销并挂起探针；取消/切页须从磁盘恢复注册，否则会长时间无热键 */
-  const hotkeysReleasedForRecordingRef = useRef(false);
+  const hotkeysReleasedForRecordingRef = useRef(false)
   /** 与 shortcutRecording 同步，供 Tauri 事件回调判断是否在录入态 */
-  const shortcutRecordingRef = useRef(false);
+  const shortcutRecordingRef = useRef(false)
   /** 防止 JS 与 Native 探针对同一组合重复提交 */
-  const shortcutCommitLockRef = useRef(false);
+  const shortcutCommitLockRef = useRef(false)
 
   const load = useCallback(async () => {
     if (!isTauriWebview()) {
-      return;
+      // 浏览器预览：示例数据，便于纯前端调整界面
+      setDataDir('C:\\portable\\my-tools\\favorites.json（预览示例）')
+      setFavorites(PREVIEW_FAVORITES)
+      setConfig(PREVIEW_CONFIG)
+      return
     }
-    const path = await invoke<string>("get_data_dir_for_ui");
-    setDataDir(path);
-    const list = await invoke<FavoriteItem[]>("get_favorites_from_disk");
-    const c = await invoke<AppConfig>("get_app_config_cmd");
-    setFavorites([...list].sort(compareFav));
-    setConfig(c);
-    const b = await isEnabled().catch(() => false);
+    const path = await invoke<string>('get_data_dir_for_ui')
+    setDataDir(path)
+    const list = await invoke<FavoriteItem[]>('get_favorites_from_disk')
+    const c = await invoke<AppConfig>('get_app_config_cmd')
+    setFavorites([...list].sort(compareFav))
+    setConfig(c)
+    const b = await isEnabled().catch(() => false)
     if (b !== c.autostart) {
-      setConfig({ ...c, autostart: b });
+      setConfig({ ...c, autostart: b })
     }
-  }, []);
+  }, [])
 
   useEffect(() => {
-    if (!isTauriWebview()) {
-      return;
-    }
-    void load();
-  }, [load]);
+    void load()
+  }, [load])
 
   /** 从磁盘恢复全局热键（录入取消、切走页面、保存失败时使用） */
   const restoreGlobalShortcutIfNeeded = useCallback(async () => {
     if (!hotkeysReleasedForRecordingRef.current) {
-      return;
+      return
     }
-    hotkeysReleasedForRecordingRef.current = false;
+    hotkeysReleasedForRecordingRef.current = false
     try {
-      await invoke("reapply_global_shortcut_from_config");
+      await invoke('reapply_global_shortcut_from_config')
     } catch (e) {
-      console.error(e);
-      (window.messageApi ?? messageFromHook).error(`恢复快捷键失败：${String(e)}`);
+      console.error(e)
+      ;(window.messageApi ?? messageFromHook).error(`恢复快捷键失败：${String(e)}`)
     }
-  }, [messageFromHook]);
+  }, [messageFromHook])
 
   /** 开始录入：Rust 注销原热键并挂 Alt+Space 的 OS 层探针（WebView 收不到该组合）；其它组合仍由页面 keydown 解析 */
   const beginShortcutRecording = useCallback(async () => {
-    try {
-      await invoke("start_hotkey_recording_probe");
-      hotkeysReleasedForRecordingRef.current = true;
-    } catch (e) {
-      console.error(e);
-      (window.messageApi ?? messageFromHook).error(
-        `无法开始录入：${String(e)}（若与其它软件热键冲突，可先关闭冲突项或使用下方「一键设为 Alt + Space」）`,
-      );
-      return;
+    if (!isTauriWebview()) {
+      ;(window.messageApi ?? messageFromHook).info('浏览器预览模式不支持录制快捷键')
+      return
     }
-    setShortcutRecording(true);
-    (window.messageApi ?? messageFromHook).info("请按下想要设置的组合键…");
-  }, [messageFromHook]);
+    try {
+      await invoke('start_hotkey_recording_probe')
+      hotkeysReleasedForRecordingRef.current = true
+    } catch (e) {
+      console.error(e)
+      ;(window.messageApi ?? messageFromHook).error(
+        `无法开始录入：${String(e)}（若与其它软件热键冲突，可先关闭冲突项或使用下方「一键设为 Alt + Space」）`,
+      )
+      return
+    }
+    setShortcutRecording(true)
+    ;(window.messageApi ?? messageFromHook).info('请按下想要设置的组合键…')
+  }, [messageFromHook])
 
   /** 取消录入并尽量恢复热键 */
   const endShortcutRecordingCancelled = useCallback(async () => {
-    setShortcutRecording(false);
-    await restoreGlobalShortcutIfNeeded();
-  }, [restoreGlobalShortcutIfNeeded]);
+    setShortcutRecording(false)
+    await restoreGlobalShortcutIfNeeded()
+  }, [restoreGlobalShortcutIfNeeded])
 
   /** 离开常规设置时结束录入并恢复热键 */
   useEffect(() => {
-    if (section !== "general") {
-      void endShortcutRecordingCancelled();
+    if (section !== 'general') {
+      void endShortcutRecordingCancelled()
     }
-  }, [section, endShortcutRecordingCancelled]);
+  }, [section, endShortcutRecordingCancelled])
 
-  /** 标题或 URL 匹配；标题命中的行排在仅 URL 命中的行之前，组内仍按添加时间等 compareFav 排序 */
+  /** 标题或 URL 匹配；标题命中的行排在仅 URL 命中的行之前，组内仍按 compareFav 排序 */
   const filtered = useMemo(() => {
-    const t = q.trim().toLowerCase();
+    const t = q.trim().toLowerCase()
     if (!t) {
-      return favorites;
+      return favorites
     }
-    const titleHits: FavoriteItem[] = [];
-    const urlOnly: FavoriteItem[] = [];
+    const titleHits: FavoriteItem[] = []
+    const urlOnly: FavoriteItem[] = []
     for (const f of favorites) {
-      const titleOk = f.title.toLowerCase().includes(t);
-      const urlOk = f.url.toLowerCase().includes(t);
+      const titleOk = f.title.toLowerCase().includes(t)
+      const urlOk = f.url.toLowerCase().includes(t)
       if (titleOk) {
-        titleHits.push(f);
+        titleHits.push(f)
       } else if (urlOk) {
-        urlOnly.push(f);
+        urlOnly.push(f)
       }
     }
-    titleHits.sort(compareFav);
-    urlOnly.sort(compareFav);
-    return [...titleHits, ...urlOnly];
-  }, [favorites, q]);
+    titleHits.sort(compareFav)
+    urlOnly.sort(compareFav)
+    return [...titleHits, ...urlOnly]
+  }, [favorites, q])
 
+  /** 先乐观更新界面，再落盘；浏览器预览只改内存 */
   const persistAll = useCallback(
     (next: FavoriteItem[], okMsg: string) => {
+      setFavorites([...next].sort(compareFav))
+      if (!isTauriWebview()) {
+        ;(window.messageApi ?? messageFromHook).info('预览模式：数据仅保存在内存中')
+        return
+      }
       void (async () => {
         try {
-          await invoke("save_favorites_replace", { items: next });
-          setFavorites([...next].sort(compareFav));
-          (window.messageApi ?? messageFromHook).success(okMsg);
+          await invoke('save_favorites_replace', { items: next })
+          ;(window.messageApi ?? messageFromHook).success(okMsg)
         } catch (e) {
-          console.error(e);
-          (window.messageApi ?? messageFromHook).error(String(e));
+          console.error(e)
+          // 落盘失败时回读磁盘，避免界面与磁盘不一致
+          await invoke<FavoriteItem[]>('get_favorites_from_disk')
+            .then((list) => setFavorites([...list].sort(compareFav)))
+            .catch(() => {})
+          ;(window.messageApi ?? messageFromHook).error(String(e))
         }
-      })();
+      })()
     },
     [messageFromHook],
-  );
+  )
 
   const onDelete = (f: FavoriteItem) => {
-    const k = makeRowKey(f);
-    const next = favorites.filter((x) => makeRowKey(x) !== k);
-    persistAll(next, "已保存（速开需 /reload 后生效）");
-  };
+    const k = makeRowKey(f)
+    const next = favorites.filter((x) => makeRowKey(x) !== k)
+    persistAll(next, '已删除')
+  }
 
   const closeBookmarkModal = () => {
-    setBookmarkModalOpen(false);
-    setEditing(null);
-    setDraftTitle("");
-    setDraftUrl("");
-  };
+    setBookmarkModalOpen(false)
+    setEditing(null)
+    setDraftTitle('')
+    setDraftUrl('')
+  }
 
   /** 提交书签表单：新增或编辑，校验规则与原先一致 */
   const submitBookmarkRow = () => {
-    const title = draftTitle.trim();
-    const url = draftUrl.trim();
-    const messageApi = window.messageApi ?? messageFromHook;
+    const title = draftTitle.trim()
+    const url = draftUrl.trim()
+    const messageApi = window.messageApi ?? messageFromHook
     if (title.length === 0) {
-      messageApi.warning("请填写标题");
-      return;
+      messageApi.warning('请填写标题')
+      return
     }
     if (!/^https?:\/\//i.test(url)) {
-      messageApi.warning("URL 须以 http:// 或 https:// 开头");
-      return;
+      messageApi.warning('URL 须以 http:// 或 https:// 开头')
+      return
     }
     if (editing) {
-      const k0 = makeRowKey(editing);
+      const k0 = makeRowKey(editing)
       const next = favorites.map((x) => {
         if (makeRowKey(x) === k0) {
-          return { title, url, addTime: editing.addTime };
+          return { title, url, addTime: editing.addTime }
         }
-        return x;
-      });
-      persistAll(next, "已保存编辑（速开需 /reload 后生效）");
-      closeBookmarkModal();
-      return;
+        return x
+      })
+      persistAll(next, '已保存编辑')
+      closeBookmarkModal()
+      return
     }
-    const addTime = dayjs().format("YYYY-MM-DD HH:mm:ss");
-    const add: FavoriteItem = { title, url, addTime };
-    const exists = favorites.some((f) => makeRowKey(f) === makeRowKey(add));
+    const addTime = dayjs().format('YYYY-MM-DD HH:mm:ss')
+    const add: FavoriteItem = { title, url, addTime }
+    const exists = favorites.some((f) => makeRowKey(f) === makeRowKey(add))
     if (exists) {
-      messageApi.warning("已存在相同时间+标题+地址");
-      return;
+      messageApi.warning('已存在相同时间+标题+地址')
+      return
     }
-    persistAll([add, ...favorites], "已添加（速开需 /reload 后生效）");
-    closeBookmarkModal();
-  };
+    persistAll([add, ...favorites], '已添加')
+    closeBookmarkModal()
+  }
 
   const onSaveConfig = (next: AppConfig) => {
     void (async () => {
-      try {
-        await invoke("save_app_config_cmd", { cfg: next });
-        setConfig(next);
-        (window.messageApi ?? messageFromHook).success("配置已保存");
-      } catch (e) {
-        console.error(e);
-        (window.messageApi ?? messageFromHook).error(String(e));
+      if (!isTauriWebview()) {
+        setConfig(next)
+        ;(window.messageApi ?? messageFromHook).info('预览模式：配置仅保存在内存中')
+        return
       }
-    })();
-  };
+      try {
+        await invoke('save_app_config_cmd', { cfg: next })
+        setConfig(next)
+        ;(window.messageApi ?? messageFromHook).success('配置已保存')
+      } catch (e) {
+        console.error(e)
+        ;(window.messageApi ?? messageFromHook).error(String(e))
+      }
+    })()
+  }
 
   /** 写入新快捷键并触发后端重载 global-shortcut */
   const applyGlobalShortcut = useCallback(
     async (hotkey: string) => {
       if (!config) {
-        return;
+        return
       }
-      const next = { ...config, global_shortcut: hotkey };
+      const next = { ...config, global_shortcut: hotkey }
+      if (!isTauriWebview()) {
+        setConfig(next)
+        ;(window.messageApi ?? messageFromHook).info('预览模式：快捷键仅保存在内存中')
+        return
+      }
       try {
-        await invoke("save_app_config_cmd", { cfg: next });
-        setConfig(next);
-        hotkeysReleasedForRecordingRef.current = false;
-        (window.messageApi ?? messageFromHook).success(`快捷键已更新为 ${formatShortcutLabel(hotkey)}`);
+        await invoke('save_app_config_cmd', { cfg: next })
+        setConfig(next)
+        hotkeysReleasedForRecordingRef.current = false
+        ;(window.messageApi ?? messageFromHook).success(
+          `快捷键已更新为 ${formatShortcutLabel(hotkey)}`,
+        )
       } catch (e) {
-        console.error(e);
-        (window.messageApi ?? messageFromHook).error(String(e));
+        console.error(e)
+        ;(window.messageApi ?? messageFromHook).error(String(e))
         try {
-          await invoke("reapply_global_shortcut_from_config");
+          await invoke('reapply_global_shortcut_from_config')
         } catch (e2) {
-          console.error(e2);
-          (window.messageApi ?? messageFromHook).error(`恢复快捷键失败：${String(e2)}`);
+          console.error(e2)
+          ;(window.messageApi ?? messageFromHook).error(`恢复快捷键失败：${String(e2)}`)
         }
-        hotkeysReleasedForRecordingRef.current = false;
+        hotkeysReleasedForRecordingRef.current = false
       }
     },
     [config, messageFromHook],
-  );
+  )
 
   /** 不经过按键捕获，直接写入预设组合（探针失败或与第三方热键冲突时的兜底） */
   const applyPresetShortcut = useCallback(
     async (hotkey: string) => {
-      setShortcutRecording(false);
-      await applyGlobalShortcut(hotkey);
+      setShortcutRecording(false)
+      await applyGlobalShortcut(hotkey)
     },
     [applyGlobalShortcut],
-  );
+  )
 
-  const applyGlobalShortcutRef = useRef(applyGlobalShortcut);
+  const applyGlobalShortcutRef = useRef(applyGlobalShortcut)
   useEffect(() => {
-    applyGlobalShortcutRef.current = applyGlobalShortcut;
-  }, [applyGlobalShortcut]);
+    applyGlobalShortcutRef.current = applyGlobalShortcut
+  }, [applyGlobalShortcut])
 
   useEffect(() => {
-    shortcutRecordingRef.current = shortcutRecording;
-  }, [shortcutRecording]);
+    shortcutRecordingRef.current = shortcutRecording
+  }, [shortcutRecording])
 
   /** Alt+Space 由 Rust `start_hotkey_recording_probe` 在 OS 层捕获并派发本事件（WebView 往往收不到该组合） */
   useEffect(() => {
     if (!isTauriWebview()) {
-      return;
+      return
     }
-    const setup = listen<string>("shortcut-recording-result", (ev) => {
+    const setup = listen<string>('shortcut-recording-result', (ev) => {
       if (!shortcutRecordingRef.current) {
-        return;
+        return
       }
       if (shortcutCommitLockRef.current) {
-        return;
+        return
       }
-      shortcutCommitLockRef.current = true;
+      shortcutCommitLockRef.current = true
       void (async () => {
         try {
-          await applyGlobalShortcutRef.current(ev.payload);
-          setShortcutRecording(false);
+          await applyGlobalShortcutRef.current(ev.payload)
+          setShortcutRecording(false)
         } finally {
-          shortcutCommitLockRef.current = false;
+          shortcutCommitLockRef.current = false
         }
-      })();
-    });
+      })()
+    })
     return () => {
       void setup.then((fn) => {
-        fn();
-      });
-    };
-  }, []);
+        fn()
+      })
+    }
+  }, [])
 
   /** 全局快捷键 keydown 捕获：除 Alt+Space 外的组合在页面层解析；Alt+Space 仅走 Native 探针 */
   useEffect(() => {
     if (!shortcutRecording || !config) {
-      return;
+      return
     }
     const onKey = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const parsed = parseHotkeyFromKeydown(e);
+      e.preventDefault()
+      e.stopPropagation()
+      const parsed = parseHotkeyFromKeydown(e)
       if (parsed === null) {
-        void endShortcutRecordingCancelled();
-        (window.messageApi ?? messageFromHook).info("已取消快捷键录入");
-        return;
+        void endShortcutRecordingCancelled()
+        ;(window.messageApi ?? messageFromHook).info('已取消快捷键录入')
+        return
       }
-      if (parsed === "") {
-        return;
+      if (parsed === '') {
+        return
       }
-      if (parsed === "__INVALID_NO_MODIFIER__") {
-        (window.messageApi ?? messageFromHook).warning("请同时按住至少一个修饰键（如 Alt、Ctrl）再按目标键");
-        return;
+      if (parsed === '__INVALID_NO_MODIFIER__') {
+        ;(window.messageApi ?? messageFromHook).warning(
+          '请同时按住至少一个修饰键（如 Alt、Ctrl）再按目标键',
+        )
+        return
       }
-      if (parsed === "Alt+Space") {
-        return;
+      if (parsed === 'Alt+Space') {
+        return
       }
       if (shortcutCommitLockRef.current) {
-        return;
+        return
       }
-      shortcutCommitLockRef.current = true;
+      shortcutCommitLockRef.current = true
       void (async () => {
         try {
-          await applyGlobalShortcut(parsed);
-          setShortcutRecording(false);
+          await applyGlobalShortcut(parsed)
+          setShortcutRecording(false)
         } finally {
-          shortcutCommitLockRef.current = false;
+          shortcutCommitLockRef.current = false
         }
-      })();
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [shortcutRecording, config, applyGlobalShortcut, messageFromHook, endShortcutRecordingCancelled]);
+      })()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [
+    shortcutRecording,
+    config,
+    applyGlobalShortcut,
+    messageFromHook,
+    endShortcutRecordingCancelled,
+  ])
 
   const onImport = () => {
+    if (!isTauriWebview()) {
+      ;(window.messageApi ?? messageFromHook).info('浏览器预览模式不支持导入')
+      return
+    }
     void (async () => {
-      const f = await open({ filters: [{ name: "JSON", extensions: ["json"] }], multiple: false });
+      const f = await open({ filters: [{ name: 'JSON', extensions: ['json'] }], multiple: false })
       if (f == null) {
-        return;
+        return
       }
-      const p = Array.isArray(f) ? f[0] : f;
+      const p = Array.isArray(f) ? f[0] : f
       if (!p) {
-        return;
+        return
       }
       try {
-        await invoke("import_favorites_path", { path: p });
-        await load();
-        (window.messageApi ?? messageFromHook).success("导入已覆盖并写入磁盘");
+        await invoke('import_favorites_path', { path: p })
+        await load()
+        ;(window.messageApi ?? messageFromHook).success('导入已覆盖并写入磁盘')
       } catch (e) {
-        (window.messageApi ?? messageFromHook).error(String(e));
+        ;(window.messageApi ?? messageFromHook).error(String(e))
       }
-    })();
-  };
+    })()
+  }
 
   const onExport = () => {
+    if (!isTauriWebview()) {
+      ;(window.messageApi ?? messageFromHook).info('浏览器预览模式不支持导出')
+      return
+    }
     void (async () => {
       const p = await save({
-        filters: [{ name: "JSON", extensions: ["json"] }],
-        defaultPath: "favorites.json",
-      });
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+        defaultPath: 'favorites.json',
+      })
       if (p == null) {
-        return;
+        return
       }
       try {
-        await invoke("export_favorites_path", { path: p });
-        (window.messageApi ?? messageFromHook).success("已导出");
+        await invoke('export_favorites_path', { path: p })
+        ;(window.messageApi ?? messageFromHook).success('已导出')
       } catch (e) {
-        (window.messageApi ?? messageFromHook).error(String(e));
+        ;(window.messageApi ?? messageFromHook).error(String(e))
       }
-    })();
-  };
+    })()
+  }
 
   /** 在系统浏览器中打开书签（Windows 走前台友好的 FileProtocolHandler） */
   const onOpenBookmarkUrl = (rawUrl: string) => {
     void (async () => {
-      const url = rawUrl.trim();
+      const url = rawUrl.trim()
       if (!url) {
-        return;
+        return
       }
       try {
-        await invoke("open_url_in_system_browser", { url });
+        if (isTauriWebview()) {
+          await invoke('open_url_in_system_browser', { url })
+        } else {
+          window.open(url, '_blank', 'noopener,noreferrer')
+        }
       } catch (e) {
-        console.error(e);
-        (window.messageApi ?? messageFromHook).error(String(e));
+        console.error(e)
+        ;(window.messageApi ?? messageFromHook).error(String(e))
       }
-    })();
-  };
+    })()
+  }
 
   const openBookmarkModal = (item?: FavoriteItem) => {
     if (item) {
-      setEditing(item);
-      setDraftTitle(item.title);
-      setDraftUrl(item.url);
+      setEditing(item)
+      setDraftTitle(item.title)
+      setDraftUrl(item.url)
     } else {
-      setEditing(null);
-      setDraftTitle("");
-      setDraftUrl("");
+      setEditing(null)
+      setDraftTitle('')
+      setDraftUrl('')
     }
-    setBookmarkModalOpen(true);
-  };
+    setBookmarkModalOpen(true)
+  }
 
-  if (!isTauriWebview()) {
-    return (
-      <div className="p-4 text-stone-700">
-        <p className="mb-2">
-          管理收藏依赖 Tauri 与本地数据；在系统浏览器中无法调用后端。请使用{" "}
-          <code className="rounded bg-stone-200 px-1">npm run tauri dev</code> 打开应用窗口操作。
-        </p>
-        <a className="text-blue-600 underline" href="/?view=palette">
-          返回速开（浏览器预览）
-        </a>
-      </div>
-    );
+  const copyDataDir = () => {
+    void (async () => {
+      try {
+        await navigator.clipboard.writeText(dataDir)
+        ;(window.messageApi ?? messageFromHook).success('数据目录已复制')
+      } catch {
+        ;(window.messageApi ?? messageFromHook).error('复制失败，请手动选择路径复制')
+      }
+    })()
   }
 
   if (!config) {
-    return <div className="flex h-full items-center justify-center bg-zinc-50 text-zinc-500">正在加载…</div>;
+    return (
+      <div className='flex h-full items-center justify-center bg-paper-50 text-[13px] text-graphite-400'>
+        正在加载…
+      </div>
+    )
   }
 
-  const shortcutDisplay = formatShortcutLabel(config.global_shortcut);
-
   return (
-    <div className="flex h-full min-h-0 w-full overflow-hidden bg-zinc-50 font-sans text-zinc-900">
-      {/* 左侧导航：对齐 Figma Make Layout；与主区同高铺满窗口 */}
-      <aside className="flex min-h-0 w-64 shrink-0 flex-col border-r border-zinc-200 bg-zinc-100/80 backdrop-blur-xl">
-        <div className="p-8">
-          <div className="mb-1 flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-linear-to-br from-blue-500 to-blue-700 text-white shadow-lg shadow-blue-500/20">
-              <Bookmark size={24} strokeWidth={2.5} />
+    <div className='flex h-full min-h-0 w-full overflow-hidden bg-paper-50 font-sans text-graphite-900'>
+      {/* 左侧导航：品牌 + 分区 + 快捷键速览 */}
+      <aside className='flex min-h-0 w-60 shrink-0 flex-col border-r border-hairline bg-white'>
+        <div className='px-5 pb-2 pt-6'>
+          <div className='flex items-center gap-3'>
+            <div className='flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-graphite-900 shadow-sm'>
+              <span aria-hidden className='h-2.5 w-2.5 rotate-45 rounded-[3px] bg-jade-400' />
             </div>
-            <div>
-              <h1 className="text-lg font-bold tracking-tight">网页快开</h1>
-              <div className="flex items-center gap-1.5">
-                <div className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
-                <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">Running</span>
+            <div className='min-w-0'>
+              <h1 className='text-[15px] font-semibold leading-5'>网页快开</h1>
+              <div className='mt-0.5 flex items-center gap-1.5'>
+                <span className='h-1.5 w-1.5 rounded-full bg-jade-400' />
+                <span className='text-[11px] text-graphite-400'>运行中</span>
               </div>
             </div>
           </div>
         </div>
 
-        <nav className="flex-1 space-y-1.5 px-4 py-4">
-          <button
-            type="button"
-            onClick={() => setSection("general")}
-            className={
-              section === "general"
-                ? "flex w-full items-center gap-3 rounded-xl bg-white px-4 py-2.5 font-semibold text-blue-600 shadow-sm ring-1 ring-zinc-200 transition-all duration-200"
-                : "flex w-full items-center gap-3 rounded-xl px-4 py-2.5 text-zinc-600 transition-all duration-200 hover:bg-zinc-200/50 hover:text-zinc-900"
-            }
+        <nav className='flex-1 space-y-1 px-3 py-4'>
+          <NavButton
+            active={section === 'general'}
+            icon={<SettingsIcon size={17} />}
+            onClick={() => setSection('general')}
           >
-            <SettingsIcon size={19} />
-            <span>常规设置</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setSection("bookmarks")}
-            className={
-              section === "bookmarks"
-                ? "flex w-full items-center gap-3 rounded-xl bg-white px-4 py-2.5 font-semibold text-blue-600 shadow-sm ring-1 ring-zinc-200 transition-all duration-200"
-                : "flex w-full items-center gap-3 rounded-xl px-4 py-2.5 text-zinc-600 transition-all duration-200 hover:bg-zinc-200/50 hover:text-zinc-900"
-            }
+            常规设置
+          </NavButton>
+          <NavButton
+            active={section === 'bookmarks'}
+            icon={<Bookmark size={17} />}
+            onClick={() => setSection('bookmarks')}
           >
-            <Bookmark size={19} />
-            <span>书签管理</span>
-          </button>
+            书签管理
+          </NavButton>
         </nav>
 
-        <div className="mt-auto p-6">
-          <div className="rounded-2xl border border-zinc-200/50 bg-zinc-200/50 p-4">
-            <p className="text-[11px] leading-relaxed text-zinc-500">
-              快捷键已就绪。按下{" "}
-              <span className="font-bold text-zinc-900">{shortcutDisplay}</span> 开启速开。
-            </p>
+        <div className='border-t border-hairline p-4'>
+          <div className='rounded-xl bg-paper-50 px-3 py-2.5'>
+            <div className='text-[11px] text-graphite-400'>全局快捷键</div>
+            <div className='mt-1.5 flex flex-wrap items-center gap-1'>
+              {shortcutChips(config.global_shortcut).map((p) => (
+                <kbd key={p} className='kbd-light'>
+                  {p}
+                </kbd>
+              ))}
+            </div>
           </div>
-          <div className="mt-6 flex items-center justify-between text-zinc-400">
-            <button type="button" className="p-1 transition-colors hover:text-zinc-600" aria-label="GitHub">
-              <Github size={18} />
-            </button>
-            <span className="text-[10px] font-bold text-zinc-400">v{pkg.version}</span>
-          </div>
+          <div className='mt-3 px-1 font-mono text-[11px] text-graphite-400'>v{pkg.version}</div>
         </div>
       </aside>
 
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-white">
-        <div className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col px-8 py-8 lg:px-12 lg:py-12">
-          {section === "general" ? (
-            <div className="min-h-0 flex-1 overflow-y-auto">
+      <main className='flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden'>
+        <div className='mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col px-8 py-8 lg:px-10'>
+          {section === 'general' ? (
+            <div className='min-h-0 flex-1 overflow-y-auto'>
               <GeneralSection
-              config={config}
-              dataDir={dataDir}
-              onSaveConfig={onSaveConfig}
-              setConfig={setConfig}
-              shortcutRecording={shortcutRecording}
-              onApplyPresetShortcut={(hotkey) => void applyPresetShortcut(hotkey)}
-              onToggleShortcutRecording={() => {
-                if (shortcutRecording) {
-                  void endShortcutRecordingCancelled();
-                  (window.messageApi ?? messageFromHook).info("已取消快捷键录入");
-                  return;
-                }
-                void beginShortcutRecording();
-              }}
-            />
+                config={config}
+                dataDir={dataDir}
+                onSaveConfig={onSaveConfig}
+                setConfig={setConfig}
+                shortcutRecording={shortcutRecording}
+                onApplyPresetShortcut={(hotkey) => void applyPresetShortcut(hotkey)}
+                onToggleShortcutRecording={() => {
+                  if (shortcutRecording) {
+                    void endShortcutRecordingCancelled()
+                    ;(window.messageApi ?? messageFromHook).info('已取消快捷键录入')
+                    return
+                  }
+                  void beginShortcutRecording()
+                }}
+                onCopyDataDir={copyDataDir}
+              />
             </div>
           ) : (
             <BookmarksSection
@@ -577,61 +630,64 @@ export function AdminView() {
       </main>
 
       <Modal
-        title={
-          <span className="text-lg font-semibold">{editing ? "编辑书签" : "新建书签"}</span>
-        }
+        title={<span className='text-[15px] font-semibold'>{editing ? '编辑书签' : '新建书签'}</span>}
         open={bookmarkModalOpen}
         onCancel={closeBookmarkModal}
         footer={null}
-        closeIcon={<X size={20} className="text-zinc-400" />}
-        classNames={{ header: "border-b border-zinc-100 bg-zinc-50/50", body: "pt-4" }}
-        width={440}
+        closeIcon={<X size={18} className='text-graphite-400' />}
+        width={420}
         centered
         destroyOnClose
       >
         <form
           onSubmit={(e) => {
-            e.preventDefault();
-            submitBookmarkRow();
+            e.preventDefault()
+            submitBookmarkRow()
           }}
-          className="space-y-4"
+          className='space-y-4 pt-1'
         >
-          <div className="flex items-center gap-3">
-            <label htmlFor="bm-title" className="w-24 shrink-0 text-sm font-medium text-zinc-700">
+          <div>
+            <label
+              htmlFor='bm-title'
+              className='mb-1.5 block text-[12px] font-medium text-graphite-500'
+            >
               标题
             </label>
             <input
-              id="bm-title"
+              id='bm-title'
               autoFocus
               value={draftTitle}
               onChange={(e) => setDraftTitle(e.currentTarget.value)}
-              placeholder="例如：Google"
-              className="min-w-0 flex-1 rounded-lg border border-zinc-200 px-3 py-2 text-sm transition-all outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+              placeholder='例如：GitHub'
+              className='w-full rounded-lg border border-hairline bg-paper-50/60 px-3 py-2 text-[13px] outline-none transition focus:border-jade-400 focus:bg-white focus:ring-2 focus:ring-jade-400/20'
             />
           </div>
-          <div className="flex items-center gap-3">
-            <label htmlFor="bm-url" className="w-24 shrink-0 text-sm font-medium text-zinc-700">
-              URL 地址
+          <div>
+            <label
+              htmlFor='bm-url'
+              className='mb-1.5 block text-[12px] font-medium text-graphite-500'
+            >
+              网址
             </label>
             <input
-              id="bm-url"
+              id='bm-url'
               value={draftUrl}
               onChange={(e) => setDraftUrl(e.currentTarget.value)}
-              placeholder="https://..."
-              className="min-w-0 flex-1 rounded-lg border border-zinc-200 px-3 py-2 text-sm transition-all outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+              placeholder='https://…'
+              className='w-full rounded-lg border border-hairline bg-paper-50/60 px-3 py-2 font-mono text-[12.5px] outline-none transition focus:border-jade-400 focus:bg-white focus:ring-2 focus:ring-jade-400/20'
             />
           </div>
-          <div className="flex gap-3 pt-4">
+          <div className='flex gap-2.5 pt-2'>
             <button
-              type="button"
+              type='button'
               onClick={closeBookmarkModal}
-              className="flex-1 rounded-lg px-4 py-2 font-medium text-zinc-700 transition-colors hover:bg-zinc-100"
+              className='flex-1 rounded-lg border border-hairline bg-white px-4 py-2 text-[13px] font-medium text-graphite-700 transition-colors hover:bg-paper-50'
             >
               取消
             </button>
             <button
-              type="submit"
-              className="flex-1 rounded-lg bg-blue-600 px-4 py-2 font-medium text-white shadow-sm transition-colors hover:bg-blue-700"
+              type='submit'
+              className='flex-1 rounded-lg bg-graphite-900 px-4 py-2 text-[13px] font-medium text-white shadow-sm transition-colors hover:bg-graphite-800'
             >
               保存
             </button>
@@ -639,10 +695,39 @@ export function AdminView() {
         </form>
       </Modal>
     </div>
-  );
+  )
 }
 
-/** 常规设置：Figma 式快捷键按键录入 + 卡片布局；自启动立即写入 */
+/** 侧栏导航项 */
+function NavButton({
+  active,
+  icon,
+  onClick,
+  children,
+}: {
+  active: boolean
+  icon: React.ReactNode
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type='button'
+      onClick={onClick}
+      className={
+        'flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px] transition-colors ' +
+        (active
+          ? 'bg-paper-100 font-medium text-graphite-900'
+          : 'text-graphite-500 hover:bg-paper-50 hover:text-graphite-800')
+      }
+    >
+      <span className={active ? 'text-jade-600' : 'text-graphite-400'}>{icon}</span>
+      <span>{children}</span>
+    </button>
+  )
+}
+
+/** 常规设置：键帽化快捷键 + 自启动；自启动立即写入 */
 function GeneralSection({
   config,
   dataDir,
@@ -651,134 +736,158 @@ function GeneralSection({
   shortcutRecording,
   onApplyPresetShortcut,
   onToggleShortcutRecording,
+  onCopyDataDir,
 }: {
-  config: AppConfig;
-  dataDir: string;
-  setConfig: (c: AppConfig) => void;
-  onSaveConfig: (c: AppConfig) => void;
-  shortcutRecording: boolean;
+  config: AppConfig
+  dataDir: string
+  setConfig: (c: AppConfig) => void
+  onSaveConfig: (c: AppConfig) => void
+  shortcutRecording: boolean
   /** 直接应用预设热键字符串（如 Alt+Space） */
-  onApplyPresetShortcut: (hotkey: string) => void;
-  onToggleShortcutRecording: () => void;
+  onApplyPresetShortcut: (hotkey: string) => void
+  onToggleShortcutRecording: () => void
+  onCopyDataDir: () => void
 }) {
-  const shortcutButtonLabel = shortcutRecording ? "等待输入..." : formatShortcutLabel(config.global_shortcut);
-
   return (
-    <div className="space-y-10">
-      <section>
-        <h2 className="mb-1 text-2xl font-semibold">常规设置</h2>
-        <p className="text-sm text-zinc-500">配置运行方式与全局唤醒快捷键；录入后由后端立即重载快捷键。</p>
+    <div className='space-y-5'>
+      <header className='shrink-0'>
+        <h2 className='text-[20px] font-semibold leading-7'>常规设置</h2>
+        <p className='mt-1 text-[13px] text-graphite-500'>调整唤起方式与应用行为。</p>
+      </header>
+
+      <section className='rounded-xl border border-hairline bg-white p-5'>
+        <div className='flex items-start gap-4'>
+          <div className='flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-jade-50 text-jade-700'>
+            <Keyboard size={20} />
+          </div>
+          <div className='min-w-0 flex-1'>
+            <h3 className='text-[14px] font-semibold leading-5'>全局快捷键</h3>
+            <p className='mt-1 text-[12.5px] text-graphite-500'>
+              在任何界面按下它，立即唤起搜索条。
+            </p>
+
+            <div className='mt-3.5 flex flex-wrap items-center gap-2'>
+              {shortcutRecording ? (
+                <>
+                  <span className='inline-flex items-center gap-2 rounded-lg bg-jade-50 px-3 py-1.5 text-[12.5px] font-medium text-jade-700 ring-1 ring-jade-200 animate-pulse'>
+                    <span className='h-1.5 w-1.5 rounded-full bg-jade-600' />
+                    按下新的组合键…
+                  </span>
+                  <button
+                    type='button'
+                    onClick={onToggleShortcutRecording}
+                    className='rounded-lg px-2 py-1.5 text-[12px] text-graphite-500 transition-colors hover:bg-paper-50 hover:text-graphite-800'
+                  >
+                    取消（Esc）
+                  </button>
+                </>
+              ) : (
+                <button
+                  type='button'
+                  onClick={onToggleShortcutRecording}
+                  title='点击修改快捷键'
+                  className='group flex items-center gap-1.5 rounded-lg p-1 transition-colors hover:bg-paper-50'
+                >
+                  {shortcutChips(config.global_shortcut).map((p) => (
+                    <kbd key={p} className='kbd-light'>
+                      {p}
+                    </kbd>
+                  ))}
+                  <span className='ml-1 text-[11.5px] text-graphite-400 group-hover:text-jade-700'>
+                    修改
+                  </span>
+                </button>
+              )}
+            </div>
+
+            <p className='mt-3.5 text-[11.5px] leading-relaxed text-graphite-400'>
+              Windows 下 <span className='font-mono'>Alt+Space</span>{' '}
+              常被系统窗口菜单占用，录入时已在系统层监听该组合；若与 PowerToys
+              等软件冲突而无法录入，可
+              <button
+                type='button'
+                onClick={() => onApplyPresetShortcut('Alt+Space')}
+                className='mx-0.5 font-medium text-jade-700 hover:underline'
+              >
+                一键设为 Alt + Space
+              </button>
+              直接保存。
+            </p>
+
+            <div className='mt-4 flex items-center gap-2 border-t border-hairline pt-3.5'>
+              <span className='shrink-0 text-[11px] text-graphite-400'>数据目录</span>
+              <code
+                className='min-w-0 flex-1 truncate font-mono text-[11px] text-graphite-500'
+                title={dataDir}
+              >
+                {dataDir}
+              </code>
+              <button
+                type='button'
+                onClick={onCopyDataDir}
+                title='复制数据目录路径'
+                className='flex shrink-0 items-center gap-1 rounded-md p-1 text-graphite-400 transition-colors hover:bg-paper-50 hover:text-jade-700'
+              >
+                <Copy size={13} />
+              </button>
+            </div>
+          </div>
+        </div>
       </section>
 
-      <div className="space-y-8">
-        <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-6">
-          <div className="flex items-start justify-between gap-4">
-            <div className="flex min-w-0 flex-1 gap-4">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-100 text-blue-600">
-                <Keyboard size={20} />
-              </div>
-              <div className="min-w-0">
-                <h3 className="font-medium">全局快捷键</h3>
-                <p className="mt-1 text-sm text-zinc-500">使用此快捷键在任何地方快速唤醒书签搜索窗口。</p>
-                <p className="mt-2 text-xs text-zinc-400">数据目录：{dataDir}</p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={onToggleShortcutRecording}
-              className={
-                shortcutRecording
-                  ? "shrink-0 rounded-lg border border-red-200 bg-red-50 px-4 py-2 font-medium text-red-600 animate-pulse transition-all"
-                  : "shrink-0 rounded-lg border border-zinc-200 bg-white px-4 py-2 font-medium text-zinc-900 shadow-sm transition-all hover:border-blue-500 hover:text-blue-600"
-              }
-            >
-              {shortcutButtonLabel}
-            </button>
+      <section className='rounded-xl border border-hairline bg-white p-5'>
+        <div className='flex items-center gap-4'>
+          <div className='flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-paper-100 text-graphite-700'>
+            <Power size={20} />
           </div>
-          <p className="mt-4 text-xs leading-relaxed text-zinc-500">
-            Windows 下 <span className="font-medium text-zinc-700">Alt+Space</span>{" "}
-            常被系统用于窗口菜单，网页里往往收不到；录入时已改为在系统层监听该组合。若仍无法录入（例如与 PowerToys
-            等冲突），可点
-            <button
-              type="button"
-              onClick={() => onApplyPresetShortcut("Alt+Space")}
-              className="mx-1 font-medium text-blue-600 hover:underline"
-            >
-              一键设为 Alt + Space
-            </button>
-            直接保存。
-          </p>
+          <div className='min-w-0 flex-1'>
+            <h3 className='text-[14px] font-semibold leading-5'>开机自启动</h3>
+            <p className='mt-1 text-[12.5px] text-graphite-500'>
+              登录 Windows 时自动运行，随时可用。
+            </p>
+          </div>
+          <AutostartToggle
+            checked={config.autostart}
+            onChange={(v) => {
+              const c = { ...config, autostart: v }
+              setConfig(c)
+              onSaveConfig(c)
+            }}
+          />
         </div>
-
-        <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-6">
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex gap-4">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-zinc-200 text-zinc-600">
-                <Power size={20} />
-              </div>
-              <div>
-                <h3 className="font-medium">开机自启动</h3>
-                <p className="mt-1 text-sm text-zinc-500">在 Windows 启动时自动运行应用。</p>
-              </div>
-            </div>
-            <AutostartToggle
-              checked={config.autostart}
-              onChange={(v) => {
-                const c = { ...config, autostart: v };
-                setConfig(c);
-                onSaveConfig(c);
-              }}
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div className="flex gap-3 rounded-xl border border-zinc-100 bg-zinc-50/50 p-4">
-            <Info size={18} className="mt-0.5 shrink-0 text-zinc-400" />
-            <div>
-              <p className="text-sm font-medium">关于缓存</p>
-              <p className="mt-1 text-xs text-zinc-500">
-                书签数据存储在本地。建议定期通过「书签管理」导出 JSON 备份以防数据丢失。
-              </p>
-            </div>
-          </div>
-          <div className="flex gap-3 rounded-xl border border-zinc-100 bg-zinc-50/50 p-4">
-            <HelpCircle size={18} className="mt-0.5 shrink-0 text-zinc-400" />
-            <div>
-              <p className="text-sm font-medium">帮助中心</p>
-              <p className="mt-1 text-xs text-zinc-500">
-                若快捷键无效或冲突，请重新录入其它组合键；速开内可使用 /reload 重新加载数据。
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
+      </section>
     </div>
-  );
+  )
 }
 
 /** iOS 风格开关外观，行为与原先 Switch 一致 */
-function AutostartToggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+function AutostartToggle({
+  checked,
+  onChange,
+}: {
+  checked: boolean
+  onChange: (v: boolean) => void
+}) {
   return (
     <button
-      type="button"
-      role="switch"
+      type='button'
+      role='switch'
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none ${
-        checked ? "bg-blue-600" : "bg-zinc-300"
+      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-jade-400/40 ${
+        checked ? 'bg-jade-600' : 'bg-graphite-300'
       }`}
     >
       <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-          checked ? "translate-x-6" : "translate-x-1"
+        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+          checked ? 'translate-x-6' : 'translate-x-1'
         }`}
       />
     </button>
-  );
+  )
 }
 
-/** 书签管理：表格 + 悬停操作工具条 */
+/** 书签管理：印章列表 + 悬停操作 + 删除确认 */
 function BookmarksSection({
   q,
   setQ,
@@ -791,170 +900,213 @@ function BookmarksSection({
   onDelete,
   onOpenUrl,
 }: {
-  q: string;
-  setQ: (s: string) => void;
-  filtered: FavoriteItem[];
-  totalCount: number;
-  onImport: () => void;
-  onExport: () => void;
-  onOpenAdd: () => void;
-  onOpenEdit: (f: FavoriteItem) => void;
-  onDelete: (f: FavoriteItem) => void;
-  onOpenUrl: (url: string) => void;
+  q: string
+  setQ: (s: string) => void
+  filtered: FavoriteItem[]
+  totalCount: number
+  onImport: () => void
+  onExport: () => void
+  onOpenAdd: () => void
+  onOpenEdit: (f: FavoriteItem) => void
+  onDelete: (f: FavoriteItem) => void
+  onOpenUrl: (url: string) => void
 }) {
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      <div className="flex min-w-0 shrink-0 flex-nowrap items-start justify-between gap-4">
-        <div className="min-w-0 flex-1">
-          <h2 className="mb-1 text-2xl font-semibold">书签管理</h2>
-          <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-zinc-500">
-            <span>管理您的所有快捷书签</span>
-            <span className="h-1 w-1 shrink-0 rounded-full bg-zinc-300" />
-            <span className="font-medium text-blue-600">共 {totalCount} 条数据</span>
-          </div>
+    <div className='flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden'>
+      <header className='flex shrink-0 flex-wrap items-start justify-between gap-3'>
+        <div className='min-w-0'>
+          <h2 className='text-[20px] font-semibold leading-7'>书签管理</h2>
+          <p className='mt-1 text-[13px] text-graphite-500'>
+            {q.trim() ? (
+              <>
+                匹配 {filtered.length} 条 · 共 {totalCount} 条收藏
+              </>
+            ) : (
+              <>共 {totalCount} 条收藏 · 最近添加的在前</>
+            )}
+          </p>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className='flex shrink-0 items-center gap-2'>
           <button
-            type="button"
+            type='button'
             onClick={onImport}
-            title="导入"
-            className="rounded-lg border border-transparent p-2 text-zinc-600 transition-colors hover:border-zinc-200 hover:bg-zinc-100"
+            title='导入 JSON（将覆盖现有收藏）'
+            className='flex items-center gap-1.5 rounded-lg border border-hairline bg-white px-3 py-2 text-[12.5px] font-medium text-graphite-700 transition-colors hover:bg-paper-50'
           >
-            <Upload size={18} />
+            <Upload size={15} />
+            导入
           </button>
           <button
-            type="button"
+            type='button'
             onClick={onExport}
-            title="导出"
-            className="rounded-lg border border-transparent p-2 text-zinc-600 transition-colors hover:border-zinc-200 hover:bg-zinc-100"
+            title='导出 JSON'
+            className='flex items-center gap-1.5 rounded-lg border border-hairline bg-white px-3 py-2 text-[12.5px] font-medium text-graphite-700 transition-colors hover:bg-paper-50'
           >
-            <Download size={18} />
+            <Download size={15} />
+            导出
           </button>
           <button
-            type="button"
+            type='button'
             onClick={onOpenAdd}
-            className="flex shrink-0 items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-white shadow-sm transition-colors hover:bg-blue-700"
+            className='flex items-center gap-1.5 rounded-lg bg-graphite-900 px-3.5 py-2 text-[12.5px] font-medium text-white shadow-sm transition-colors hover:bg-graphite-800'
           >
-            <Plus size={18} />
-            <span>添加书签</span>
+            <Plus size={15} />
+            添加书签
           </button>
         </div>
-      </div>
+      </header>
 
-      <div className="relative mt-6 mb-4 shrink-0">
-        <Search className="pointer-events-none absolute top-1/2 left-3 h-[18px] w-[18px] -translate-y-1/2 text-zinc-400" />
+      <div className='relative mt-5 shrink-0'>
+        <Search
+          size={16}
+          className='pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-graphite-400'
+        />
         <input
-          type="search"
-          placeholder="搜索书签标题或 URL..."
+          type='search'
           value={q}
           onChange={(e) => setQ(e.currentTarget.value)}
-          className="w-full rounded-xl border border-zinc-200 bg-zinc-50 py-2.5 pr-4 pl-10 text-sm transition-all outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+          placeholder='搜索标题或网址'
+          className='w-full rounded-lg border border-hairline bg-white py-2.5 pl-9 pr-9 text-[13px] outline-none transition placeholder:text-graphite-400 focus:border-jade-400 focus:ring-2 focus:ring-jade-400/20 [&::-webkit-search-cancel-button]:hidden'
         />
+        {q ? (
+          <button
+            type='button'
+            onClick={() => setQ('')}
+            title='清除搜索'
+            className='absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-graphite-400 transition-colors hover:bg-paper-50 hover:text-graphite-700'
+          >
+            <X size={14} />
+          </button>
+        ) : null}
       </div>
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white">
-        <div className="min-h-0 flex-1 overflow-auto overscroll-contain">
-          <table className="w-full table-fixed text-left">
-            <colgroup>
-              <col className="w-[26%]" />
-              <col className="w-[34%]" />
-              <col className="w-[24%]" />
-              <col className="w-[16%]" />
-            </colgroup>
-            <thead className="sticky top-0 z-20 border-b border-zinc-200 bg-zinc-50 shadow-sm">
-              <tr>
-                <th className="px-6 py-3 text-xs font-semibold tracking-wider text-zinc-500 uppercase">标题</th>
-                <th className="px-6 py-3 text-xs font-semibold tracking-wider text-zinc-500 uppercase">URL</th>
-                <th className="px-6 py-3 text-xs font-semibold tracking-wider text-zinc-500 uppercase">添加时间</th>
-                <th className="whitespace-nowrap px-6 py-3 text-right text-xs font-semibold tracking-wider text-zinc-500 uppercase">
-                  操作
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-100">
-              {filtered.map((bookmark) => {
-                const rowKey = makeRowKey(bookmark);
-                return (
-                  <tr key={rowKey} className="transition-colors hover:bg-zinc-50/50">
-                    <td className="min-w-0 px-6 py-4">
-                      <span className="block truncate font-semibold text-zinc-900">{bookmark.title}</span>
-                    </td>
-                    <td className="min-w-0 px-6 py-4">
-                      <span className="block truncate text-sm text-zinc-500">{bookmark.url}</span>
-                    </td>
-                    <td className="min-w-0 px-6 py-4">
-                      <div className="flex min-w-0 items-center gap-2 text-sm text-zinc-400">
-                        <Clock size={14} className="shrink-0" />
-                        <span className="truncate">{bookmark.addTime}</span>
-                      </div>
-                    </td>
-                    <td className="whitespace-nowrap px-6 py-4 text-right">
-                      <div className="flex justify-end gap-1">
-                        <button
-                          type="button"
-                          title="访问"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            onOpenUrl(bookmark.url);
-                          }}
-                          className="rounded-md p-1.5 text-zinc-400 transition-all hover:bg-green-50 hover:text-green-600"
-                        >
-                          <ExternalLink size={16} />
-                        </button>
-                        <button
-                          type="button"
-                          title="编辑"
-                          onClick={() => onOpenEdit(bookmark)}
-                          className="rounded-md p-1.5 text-zinc-400 transition-all hover:bg-blue-50 hover:text-blue-600"
-                        >
-                          <Edit2 size={16} />
-                        </button>
-                        <button
-                          type="button"
-                          title="删除"
-                          onClick={() => onDelete(bookmark)}
-                          className="rounded-md p-1.5 text-zinc-400 transition-all hover:bg-red-50 hover:text-red-600"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-              {filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={4} className="px-6 py-12 text-center italic text-zinc-400">
-                    未找到匹配的书签
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
+      <div className='mt-4 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-hairline bg-white'>
+        <div className='admin-scroll min-h-0 flex-1 overflow-auto overscroll-contain'>
+          {filtered.map((bookmark) => {
+            const rowKey = makeRowKey(bookmark)
+            return (
+              <div
+                key={rowKey}
+                className='group flex items-center gap-3 border-b border-hairline px-4 py-3 transition-colors last:border-b-0 hover:bg-paper-50'
+              >
+                <Seal
+                  url={bookmark.url}
+                  title={bookmark.title}
+                  variant='light'
+                  className='h-9 w-9 rounded-[10px] text-[14px]'
+                />
+                <div className='min-w-0 flex-1'>
+                  <div className='truncate text-[13.5px] font-medium leading-5 text-graphite-900'>
+                    {bookmark.title}
+                  </div>
+                  <div className='truncate font-mono text-[11.5px] leading-4 text-graphite-400'>
+                    {bookmark.url}
+                  </div>
+                </div>
+                <div
+                  className='hidden w-28 shrink-0 text-right text-[12px] tabular-nums text-graphite-400 sm:block'
+                  title={bookmark.addTime}
+                >
+                  {relativeFrom(bookmark.addTime)}
+                </div>
+                <div className='flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100'>
+                  <button
+                    type='button'
+                    title='在浏览器打开'
+                    onClick={() => onOpenUrl(bookmark.url)}
+                    className='rounded-md p-1.5 text-graphite-400 transition-colors hover:bg-jade-50 hover:text-jade-700'
+                  >
+                    <ExternalLink size={15} />
+                  </button>
+                  <button
+                    type='button'
+                    title='编辑'
+                    onClick={() => onOpenEdit(bookmark)}
+                    className='rounded-md p-1.5 text-graphite-400 transition-colors hover:bg-paper-100 hover:text-graphite-900'
+                  >
+                    <Edit2 size={15} />
+                  </button>
+                  <Popconfirm
+                    title='删除书签'
+                    description={`确定删除「${bookmark.title}」吗？`}
+                    okText='删除'
+                    cancelText='取消'
+                    okButtonProps={{ danger: true }}
+                    onConfirm={() => onDelete(bookmark)}
+                  >
+                    <button
+                      type='button'
+                      title='删除'
+                      className='rounded-md p-1.5 text-graphite-400 transition-colors hover:bg-red-50 hover:text-red-600'
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </Popconfirm>
+                </div>
+              </div>
+            )
+          })}
+
+          {totalCount === 0 ? (
+            <div className='flex flex-col items-center justify-center px-6 py-16 text-center'>
+              <span aria-hidden className='h-3 w-3 rotate-45 rounded-[4px] bg-jade-300' />
+              <div className='mt-4 text-[14px] font-medium text-graphite-900'>还没有收藏</div>
+              <p className='mt-1.5 max-w-xs text-[12.5px] leading-relaxed text-graphite-400'>
+                添加第一个常用网址，之后随时按全局快捷键唤起搜索条直达。
+              </p>
+              <button
+                type='button'
+                onClick={onOpenAdd}
+                className='mt-5 flex items-center gap-1.5 rounded-lg bg-graphite-900 px-3.5 py-2 text-[12.5px] font-medium text-white shadow-sm transition-colors hover:bg-graphite-800'
+              >
+                <Plus size={15} />
+                添加书签
+              </button>
+            </div>
+          ) : null}
+
+          {totalCount > 0 && filtered.length === 0 ? (
+            <div className='flex flex-col items-center justify-center px-6 py-16 text-center'>
+              <div className='text-[14px] font-medium text-graphite-900'>
+                没有匹配“{q.trim()}”的书签
+              </div>
+              <button
+                type='button'
+                onClick={() => setQ('')}
+                className='mt-3 rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] font-medium text-graphite-700 transition-colors hover:bg-paper-50'
+              >
+                清除搜索
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
-  );
+  )
 }
 
 function compareFav(a: FavoriteItem, b: FavoriteItem) {
   if (a.addTime === b.addTime) {
-    return b.title.localeCompare(a.title, "zh-CN");
+    return b.title.localeCompare(a.title, 'zh-CN')
   }
-  return b.addTime.localeCompare(a.addTime, "zh-Hans", { numeric: true });
+  return b.addTime.localeCompare(a.addTime, 'zh-Hans', { numeric: true })
 }
 
 function makeRowKey(f: FavoriteItem) {
-  return `${f.addTime}::${f.title}::${f.url}`;
+  return `${f.addTime}::${f.title}::${f.url}`
 }
 
 export function AdminRoot() {
   return (
-    <ConfigProvider theme={{ algorithm: theme.defaultAlgorithm }}>
-      <App className="h-full min-h-0">
+    <ConfigProvider
+      theme={{
+        algorithm: theme.defaultAlgorithm,
+        token: { colorPrimary: '#0e8f6e', colorInfo: '#0e8f6e', borderRadius: 8 },
+      }}
+    >
+      <App className='h-full min-h-0'>
         <AdminView />
       </App>
     </ConfigProvider>
-  );
+  )
 }

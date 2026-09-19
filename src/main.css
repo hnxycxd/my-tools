@@ -1,5 +1,55 @@
 @import "tailwindcss";
 
+/* ============================================================
+   「墨与玉」设计令牌
+   墨（ink/fog）：速开悬浮窗的深色精密仪器面
+   纸（paper/graphite）：管理窗的浅色工作台面
+   玉（jade）：贯穿两个表面的唯一强调色
+   ============================================================ */
+@theme {
+  --font-sans:
+    "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC",
+    system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, "JetBrains Mono", "Courier New", monospace;
+
+  /* 墨：速开窗深色面板 */
+  --color-ink-950: #14161a;
+  --color-ink-900: #1a1d23;
+  --color-ink-850: #20242b;
+  --color-ink-800: #262b33;
+  --color-ink-700: #2f353f;
+  --color-ink-600: #3a414c;
+
+  /* 雾：深色面上的文字 */
+  --color-fog-50: #f3f5f7;
+  --color-fog-300: #c3cad2;
+  --color-fog-400: #9aa3ae;
+  --color-fog-500: #7d8690;
+  --color-fog-600: #697079;
+
+  /* 玉：唯一强调色 */
+  --color-jade-50: #e9f7f1;
+  --color-jade-100: #d2efe3;
+  --color-jade-200: #a9efd8;
+  --color-jade-300: #6ee2bb;
+  --color-jade-400: #48d3a4;
+  --color-jade-600: #0e8f6e;
+  --color-jade-700: #0b755a;
+
+  /* 纸：管理窗浅色面 */
+  --color-paper-50: #f6f7f8;
+  --color-paper-100: #eef0f2;
+  --color-hairline: #e7e9ec;
+
+  /* 石墨：浅色面上的文字与墨色按钮 */
+  --color-graphite-300: #c4c9cf;
+  --color-graphite-400: #9ca3af;
+  --color-graphite-500: #6b7280;
+  --color-graphite-700: #374151;
+  --color-graphite-800: #23272d;
+  --color-graphite-900: #1a1d21;
+}
+
 html,
 body,
 #root {
@@ -11,4 +61,105 @@ body,
 body {
   @apply antialiased;
   background-color: transparent;
+  font-family: var(--font-sans);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-jade-400) 35%, transparent);
+}
+
+/* 唤起动画：速开窗每次被快捷键唤起时的入场（尊重减弱动态设置） */
+@keyframes palette-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 候选行随过滤结果快速浮现 */
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.palette-pop {
+  animation: palette-pop 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.row-in {
+  animation: row-in 120ms ease-out both;
+}
+
+/* 深色列表的细滚动条 */
+.palette-list {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+.palette-list::-webkit-scrollbar {
+  width: 8px;
+}
+.palette-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.palette-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.palette-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* 键帽：速开窗底部与输入框右侧的操作提示 */
+.kbd-dark {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--color-fog-400);
+}
+
+.kbd-light {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 5px;
+  background: var(--color-paper-50);
+  box-shadow:
+    inset 0 0 0 1px var(--color-hairline),
+    0 1px 0 0 var(--color-hairline);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1;
+  color: var(--color-graphite-700);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

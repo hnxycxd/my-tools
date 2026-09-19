@@ -33,7 +33,7 @@ const WIN_ADMIN: &str = "admin";
 /// 持有一段 [`TrayIcon`] 引用，避免被 drop 后托盘消失
 struct TrayState(#[allow(dead_code)] tauri::tray::TrayIcon);
 
-/// 进程内收藏快照：仅启动时从磁盘加载；管理端写盘后不更新本快照，需 /reload
+/// 进程内收藏快照：启动时加载，导入/保存后会同步更新
 pub struct FavoritesState(Mutex<Vec<FavoriteItem>>);
 
 /// 可移植数据目录
@@ -96,11 +96,23 @@ fn hide_palette<R: Runtime, M: Manager<R>>(app: &M) -> Result<(), String> {
   Ok(())
 }
 
+/// 显示窗口并置前。WebView2 存在已知问题：窗口长期隐藏后首次 `show()` 时合成器不重新出帧，
+/// 表现为整窗白屏，只有重启应用才能恢复（透明窗口走另一条合成路径不受影响，palette 因此幸免）。
+/// 因此 show 后将外框尺寸抖动 1px 再还原，强制 WebView2 失效重绘。
+fn show_and_focus<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), String> {
+  window.show().map_err(|e| e.to_string())?;
+  if let Ok(size) = window.outer_size() {
+    let (w, h) = (size.width, size.height);
+    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(w, h + 1)));
+    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(w, h)));
+  }
+  window.set_focus().map_err(|e| e.to_string())
+}
+
 fn show_admin<R: Runtime, M: Manager<R>>(app: &M) -> Result<(), String> {
   let _ = hide_palette(app);
   if let Some(w) = app.get_webview_window(WIN_ADMIN) {
-    w.show().map_err(|e| e.to_string())?;
-    w.set_focus().map_err(|e| e.to_string())?;
+    show_and_focus(&w)?;
   }
   Ok(())
 }
@@ -177,11 +189,19 @@ fn get_app_config_cmd(app: tauri::AppHandle) -> Result<AppConfig, String> {
   load_or_init_app_config(&dir).map_err(|e| e.to_string())
 }
 
-/// 只写磁盘，不更新 FavoritesState
+/// 保存收藏：写盘并同步进程内快照
 #[tauri::command]
-fn save_favorites_replace(app: tauri::AppHandle, items: Vec<FavoriteItem>) -> Result<(), String> {
+fn save_favorites_replace(
+  app: tauri::AppHandle,
+  state: tauri::State<'_, FavoritesState>,
+  items: Vec<FavoriteItem>,
+) -> Result<(), String> {
   let dir = data_dir_from_state(&app)?;
-  save_favorites_to_disk(&dir, &items).map_err(|e| e.to_string())
+  save_favorites_to_disk(&dir, &items).map_err(|e| e.to_string())?;
+  // 写盘成功后同步进程内快照，避免「管理页已改但速开仍旧数据」
+  let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+  *guard = items;
+  Ok(())
 }
 
 #[tauri::command]
@@ -194,11 +214,18 @@ fn save_app_config_cmd(app: tauri::AppHandle, cfg: AppConfig) -> Result<(), Stri
 }
 
 #[tauri::command]
-fn import_favorites_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
+fn import_favorites_path(
+  app: tauri::AppHandle,
+  state: tauri::State<'_, FavoritesState>,
+  path: String,
+) -> Result<(), String> {
   let dir = data_dir_from_state(&app)?;
   let data = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
   let items = parse_and_validate_favorites_json(&data).map_err(|e| e.to_string())?;
   save_favorites_to_disk(&dir, &items).map_err(|e| e.to_string())?;
+  // 导入后同步内存快照，保证后续读取立即生效
+  let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+  *guard = items;
   Ok(())
 }
 
@@ -279,7 +306,7 @@ fn get_about_info() -> Result<AboutInfo, String> {
   let val: serde_json::Value = serde_json::from_str(PACKAGE_JSON).map_err(|e| e.to_string())?;
   eprintln!("[about] parsed: name={:?}, version={:?}, author={:?}",
     val.get("name"), val.get("version"), val.get("author"));
-  let name = val["name"].as_str().unwrap_or("c-tools").to_string();
+  let name = val["name"].as_str().unwrap_or("my-tools").to_string();
   let version = val["version"].as_str().unwrap_or("0.0.0").to_string();
   let author = val["author"].as_str().unwrap_or("").to_string();
   eprintln!("[about] returning: name={}, version={}, author={}", name, version, author);
@@ -302,6 +329,15 @@ fn hide_palette_cmd(app: tauri::AppHandle) -> Result<(), String> {
   hide_palette(&app)
 }
 
+/// 关闭关于窗口：由 `about.html` 的「确定」按钮调用，统一走 Rust 侧窗口管理，避免前端 API 差异导致按钮失效。
+#[tauri::command]
+fn hide_about_cmd(app: tauri::AppHandle) -> Result<(), String> {
+  if let Some(w) = app.get_webview_window("about") {
+    w.hide().map_err(|e| e.to_string())?;
+  }
+  Ok(())
+}
+
 #[tauri::command]
 fn show_admin_cmd(app: tauri::AppHandle) -> Result<(), String> {
   show_admin(&app)
@@ -313,7 +349,7 @@ pub fn run() {
     .plugin(tauri_plugin_opener::init())
     .plugin(
       tauri_plugin_autostart::Builder::new()
-        .app_name("c-tools")
+        .app_name("my-tools")
         .build(),
     )
     .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -370,8 +406,7 @@ pub fn run() {
             let _ = h.restart();
           } else if id == "about" {
             if let Some(w) = h.get_webview_window("about") {
-              let _ = w.show();
-              let _ = w.set_focus();
+              let _ = show_and_focus(&w);
             }
           } else if id == "quit" {
             h.exit(0);
@@ -406,6 +441,7 @@ pub fn run() {
       get_data_dir_for_ui,
       show_palette_cmd,
       hide_palette_cmd,
+      hide_about_cmd,
       show_admin_cmd,
     ])
     // 管理窗和关于窗点右上角关闭会销毁 Webview，导致后续无法再打开；改为仅隐藏保留实例
