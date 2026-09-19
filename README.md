@@ -49,6 +49,17 @@ npm run build
 npm run zip:win
 ```
 
+### 自动发布（GitHub Actions）
+
+推送 `v` 开头的 tag（如 `v0.1.0`）即自动在 GitHub Actions 上打包便携版并发布到 [Releases](https://github.com/hnxycxd/my-tools/releases)，产物为 `my-tools-v{版本号}-win-portable.zip`：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+tag 版本号会自动同步进 exe 与压缩包内说明（无需手动改 `package.json` / `tauri.conf.json`）。也可在 Actions 页面手动触发一次构建试跑（不发布）。
+
 ## 技术栈
 
 | 层 | 技术 |

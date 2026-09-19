@@ -1,0 +1,74 @@
+# 推送 v 开头的 tag（如 v0.1.0）时自动打包便携版并发布到 GitHub Release。
+# 也可在 Actions 页面手动触发（workflow_dispatch），用于不发布仅试跑构建。
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+# 创建 Release 需要写权限
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: 构建便携版并发布
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装 Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 编译产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # 让 exe 元数据和 zip 内 readme 的版本号与 tag 一致（仅 CI 内临时修改，不回写仓库）
+      - name: 用 tag 版本号同步 package.json 与 tauri.conf.json
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          export VERSION
+          echo "本次发布版本: $VERSION"
+          node -e "
+            const fs = require('node:fs');
+            for (const file of ['package.json', 'src-tauri/tauri.conf.json']) {
+              const json = JSON.parse(fs.readFileSync(file, 'utf8'));
+              json.version = process.env.VERSION;
+              fs.writeFileSync(file, JSON.stringify(json, null, 2) + '\n');
+            }
+          "
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 构建 Tauri 应用
+        run: npx tauri build
+
+      - name: 生成便携版 zip
+        shell: pwsh
+        run: ./scripts/zip-win.ps1
+
+      - name: 压缩包名加上版本号
+        shell: bash
+        run: mv my-tools-win-portable.zip "my-tools-${GITHUB_REF_NAME}-win-portable.zip"
+
+      # 仅 tag 触发时发布；手动触发时只验证构建
+      - name: 创建 GitHub Release 并上传压缩包
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: my-tools-*-win-portable.zip
+          generate_release_notes: true
