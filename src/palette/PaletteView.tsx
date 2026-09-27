@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppEntry } from '../types/app'
 import type { FavoriteItem } from '../types/favorite'
 import { isTauriWebview } from '../utils/tauriEnv'
-import { PREVIEW_APP_ICONS, PREVIEW_APPS, PREVIEW_CONFIG, PREVIEW_FAVORITES } from '../utils/previewData'
+import { PREVIEW_APP_ICONS, PREVIEW_APPS, PREVIEW_FAVORITES } from '../utils/previewData'
 import { Seal } from '../components/Seal'
 
 type PaletteRow =
@@ -37,17 +37,9 @@ function nameMatch(name: string, k: string): { hit: boolean; fromStart: boolean 
   return { hit: false, fromStart: false }
 }
 
-/** 把 `Alt+Space` 转成键帽数组 */
-function shortcutParts(raw: string): string[] {
-  return raw
-    .split('+')
-    .map((p) => p.trim())
-    .filter(Boolean)
-}
-
 /**
  * 速开：紧凑置顶窗口（无全屏蒙层），失焦即关。
- * 深墨面板 + 玉色点缀；输入过滤收藏与本机应用，支持网址直达与必应搜索，底部常驻键位提示。
+ * 深墨面板 + 玉色点缀；输入过滤收藏与本机应用，支持网址直达与必应搜索。
  */
 export function PaletteView() {
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -55,7 +47,6 @@ export function PaletteView() {
   const [raw, setRaw] = useState('')
   /** 每次窗口被唤起时 +1，重放入场动画 */
   const [popKey, setPopKey] = useState(0)
-  const [shortcutLabel, setShortcutLabel] = useState('')
 
   const [items, setItems] = useState<FavoriteItem[]>([])
   const [apps, setApps] = useState<AppEntry[]>([])
@@ -74,7 +65,6 @@ export function PaletteView() {
     if (!isTauriWebview()) {
       setItems(PREVIEW_FAVORITES)
       setApps(PREVIEW_APPS)
-      setShortcutLabel(PREVIEW_CONFIG.global_shortcut)
       return
     }
     // 直接读磁盘最新数据，避免仅依赖启动快照导致跨机器/长驻进程不一致
@@ -84,9 +74,6 @@ export function PaletteView() {
     void invoke<AppEntry[]>('list_installed_apps_cmd')
       .then((list) => setApps(list))
       .catch(console.error)
-    void invoke<{ global_shortcut: string }>('get_app_config_cmd')
-      .then((c) => setShortcutLabel(c.global_shortcut))
-      .catch(() => {})
   }, [])
 
   /** 标题（含拼音/首字母）或 URL 含关键字即命中；标题命中的项排在仅 URL 命中的项之前，组内保持原列表顺序 */
@@ -390,8 +377,6 @@ export function PaletteView() {
     void hide()
   }
 
-  const shortcutChips = shortcutParts(shortcutLabel)
-
   return (
     <div
       className='fixed inset-0 box-border flex flex-col px-2 pb-3 pt-2'
@@ -414,15 +399,6 @@ export function PaletteView() {
             onChange={(e) => setRaw(e.currentTarget.value)}
             onKeyDown={onKeyDown}
           />
-          {shortcutChips.length > 0 ? (
-            <div aria-hidden className='hidden shrink-0 items-center gap-1 sm:flex'>
-              {shortcutChips.map((p) => (
-                <kbd key={p} className='kbd-dark'>
-                  {p}
-                </kbd>
-              ))}
-            </div>
-          ) : null}
         </div>
 
         {/* 命令态提示 */}
