@@ -1,7 +1,7 @@
 {
   "name": "my-tools",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "author": "chengxudong",
   "scripts": {
@@ -11,6 +11,10 @@
     "build:web": "npm run sync-version && vite build",
     "build:tauri": "tauri build",
     "build": "node ./scripts/build-win-portable.mjs",
+    "bump-version": "node ./scripts/bump-version.mjs",
+    "build:major": "npm run bump-version -- major && npm run build",
+    "build:minor": "npm run bump-version -- minor && npm run build",
+    "build:patch": "npm run bump-version -- patch && npm run build",
     "preview": "vite preview",
     "tauri": "tauri",
     "zip:win": "powershell -ExecutionPolicy Bypass -File ./scripts/zip-win.ps1"

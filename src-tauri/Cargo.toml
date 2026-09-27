@@ -1,6 +1,6 @@
 [package]
 name = "my-tools"
-version = "1.0.1"
+version = "1.0.2"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -12,7 +12,16 @@ edition = "2021"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "my_tools_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# 桌面应用只需 rlib；staticlib/cdylib 仅供 iOS/Android 打包使用
+crate-type = ["rlib"]
+
+# 产物瘦身：体积优先
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -25,10 +34,9 @@ tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-chrono = { version = "0.4", features = ["serde"] }
-regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 thiserror = "1.0"
-image = { version = "0.25", default-features = false, features = ["png"] }
+png = "0.17"
 base64 = "0.22"
 
 [target.'cfg(target_os = "windows")'.dependencies]

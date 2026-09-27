@@ -1,6 +1,5 @@
 //! 可移植数据目录、收藏与配置的读写与导入校验
 use chrono::NaiveDateTime;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::io::{Error, ErrorKind};
 use std::path::Path;
@@ -122,7 +121,6 @@ pub fn parse_and_validate_favorites_json(data: &str) -> Result<Vec<FavoriteItem>
   let arr = v
     .as_array()
     .ok_or_else(|| ImportError::NotArray("根节点须为数组".to_string()))?;
-  let url_re = Regex::new(r"^https?://").expect("static regex");
   let mut out = Vec::new();
   for (i, item) in arr.iter().enumerate() {
     let o = item
@@ -141,7 +139,7 @@ pub fn parse_and_validate_favorites_json(data: &str) -> Result<Vec<FavoriteItem>
       .and_then(|v| v.as_str())
       .ok_or_else(|| ImportError::Item(i + 1, "缺少 url 或类型错误".to_string()))?
       .trim();
-    if !url_re.is_match(url) {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
       return Err(ImportError::Item(
         i + 1,
         "url 须以 http:// 或 https:// 开头".to_string(),

@@ -254,14 +254,18 @@ pub fn extract_icon_data_uri(target: &str) -> Option<String> {
     px[2] = ((b * 255 + a / 2) / a).min(255) as u8;
   }
 
-  let img = image::RgbaImage::from_raw(w as u32, h as u32, buf)?;
-  let mut png = Vec::new();
-  img
-    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-    .ok()?;
+  let mut png_bytes = Vec::new();
+  {
+    let mut encoder = png::Encoder::new(&mut png_bytes, w as u32, h as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().ok()?;
+    writer.write_image_data(&buf).ok()?;
+    // writer drop 时 flush 剩余数据
+  }
   Some(format!(
     "data:image/png;base64,{}",
-    base64::engine::general_purpose::STANDARD.encode(png)
+    base64::engine::general_purpose::STANDARD.encode(png_bytes)
   ))
 }
 

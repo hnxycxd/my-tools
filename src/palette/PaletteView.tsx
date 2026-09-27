@@ -389,7 +389,7 @@ export function PaletteView() {
       >
         {/* 搜索条 */}
         <div className='flex h-[54px] items-center gap-3 px-4'>
-          <span aria-hidden className='h-2.5 w-2.5 shrink-0 rotate-45 rounded-[3px] bg-jade-400' />
+          {/* <span aria-hidden className='h-2.5 w-2.5 shrink-0 rotate-45 rounded-[3px] bg-jade-400' /> */}
           <input
             ref={inputRef}
             className='min-w-0 flex-1 border-0 bg-transparent text-[15px] text-fog-50 caret-jade-300 outline-none ring-0 placeholder:text-fog-600'
@@ -430,8 +430,10 @@ export function PaletteView() {
               const active = idx === selSafe
               const isSynthetic = row.kind !== 'fav'
               const prevIsFav = idx > 0 && rows[idx - 1].kind === 'fav'
-              const rowTitle = row.kind === 'fav' ? row.item.title : row.kind === 'app' ? row.name : row.title
-              const rowSub = row.kind === 'fav' ? row.item.url : row.kind === 'app' ? row.target : row.subtitle
+              const rowTitle =
+                row.kind === 'fav' ? row.item.title : row.kind === 'app' ? row.name : row.title
+              const rowSub =
+                row.kind === 'fav' ? row.item.url : row.kind === 'app' ? row.target : row.subtitle
               return (
                 <li
                   key={
@@ -522,8 +524,12 @@ export function PaletteView() {
                       </span>
                     )}
                     <div className='min-w-0 flex-1'>
-                      <div className='truncate text-[13.5px] font-medium leading-5 text-fog-50'>{rowTitle}</div>
-                      <div className='truncate font-mono text-[11px] leading-4 text-fog-500'>{rowSub}</div>
+                      <div className='truncate text-[13.5px] font-medium leading-5 text-fog-50'>
+                        {rowTitle}
+                      </div>
+                      <div className='truncate font-mono text-[11px] leading-4 text-fog-500'>
+                        {rowSub}
+                      </div>
                     </div>
                     {active ? (
                       <kbd aria-hidden className='kbd-dark shrink-0'>

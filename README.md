@@ -45,6 +45,11 @@ npm run dev
 # 构建并复制 my-tools.exe 到仓库根目录
 npm run build
 
+# 先升级版本号（package.json、Cargo.toml 自动同步）再打包
+npm run build:patch   # 小版本 +0.0.1，如 1.0.1 -> 1.0.2
+npm run build:minor   # 次版本 +0.1.0，如 1.0.1 -> 1.1.0
+npm run build:major   # 大版本 +1.0.0，如 1.0.1 -> 2.0.0
+
 # 生成免安装压缩包
 npm run zip:win
 ```
