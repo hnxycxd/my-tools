@@ -76,11 +76,11 @@ export function PaletteView() {
       .catch(console.error)
   }, [])
 
-  /** 标题（含拼音/首字母）或 URL 含关键字即命中；标题命中的项排在仅 URL 命中的项之前，组内保持原列表顺序 */
+  /** 未输入时不展示候选（空白搜索条）；标题（含拼音/首字母）或 URL 含关键字即命中，标题命中的项排在仅 URL 命中的项之前，组内保持原列表顺序 */
   const filtered = useMemo(() => {
     const k = raw.trim().toLowerCase()
     if (k.length === 0) {
-      return items
+      return []
     }
     const titleHits: FavoriteItem[] = []
     const urlOnly: FavoriteItem[] = []
