@@ -9,6 +9,8 @@ import {
   Download,
   Edit2,
   ExternalLink,
+  File,
+  Folder,
   Keyboard,
   Plus,
   Power,
@@ -17,14 +19,16 @@ import {
   Trash2,
   Upload,
   X,
+  Zap,
 } from 'lucide-react'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
 import 'dayjs/locale/zh-cn'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppConfig, FavoriteItem } from '../types/favorite'
+import type { ShortcutItem } from '../types/shortcut'
 import { isTauriWebview } from '../utils/tauriEnv'
-import { PREVIEW_CONFIG, PREVIEW_FAVORITES } from '../utils/previewData'
+import { PREVIEW_CONFIG, PREVIEW_FAVORITES, PREVIEW_SHORTCUTS } from '../utils/previewData'
 import { Seal } from '../components/Seal'
 import pkg from '../../package.json'
 
@@ -32,7 +36,7 @@ dayjs.extend(relativeTime)
 dayjs.locale('zh-cn')
 
 /** 管理页分区 */
-type AdminSection = 'general' | 'bookmarks'
+type AdminSection = 'general' | 'bookmarks' | 'shortcuts'
 
 /**
  * 侧栏与按钮展示用：将磁盘中的 `Alt+Space` 转为更易读的 `Alt + Space`
@@ -115,6 +119,15 @@ export function AdminView() {
   const [editing, setEditing] = useState<FavoriteItem | null>(null)
   /** 书签添加/编辑弹层 */
   const [bookmarkModalOpen, setBookmarkModalOpen] = useState(false)
+  /** 快捷方式列表及其管理页内搜索词 */
+  const [shortcuts, setShortcuts] = useState<ShortcutItem[]>([])
+  const [sq, setSq] = useState('')
+  const [scDraftName, setScDraftName] = useState('')
+  const [scDraftPath, setScDraftPath] = useState('')
+  /** 正在编辑的原快捷方式（以 addTime+name+path 定位） */
+  const [editingShortcut, setEditingShortcut] = useState<ShortcutItem | null>(null)
+  /** 快捷方式添加/编辑弹层 */
+  const [shortcutModalOpen, setShortcutModalOpen] = useState(false)
   /** 当前侧栏选中的分区 */
   const [section, setSection] = useState<AdminSection>('general')
   /** 是否正在录入全局快捷键（按键捕获） */
@@ -132,12 +145,15 @@ export function AdminView() {
       setDataDir('C:\\portable\\my-tools\\favorites.json（预览示例）')
       setFavorites(PREVIEW_FAVORITES)
       setConfig(PREVIEW_CONFIG)
+      setShortcuts(PREVIEW_SHORTCUTS)
       return
     }
     const path = await invoke<string>('get_data_dir_for_ui')
     setDataDir(path)
     const list = await invoke<FavoriteItem[]>('get_favorites_from_disk')
     const c = await invoke<AppConfig>('get_app_config_cmd')
+    const sc = await invoke<ShortcutItem[]>('get_shortcuts_from_disk').catch(() => [])
+    setShortcuts([...sc].sort(compareShortcut))
     setFavorites([...list].sort(compareFav))
     setConfig(c)
     const b = await isEnabled().catch(() => false)
@@ -219,6 +235,28 @@ export function AdminView() {
     return [...titleHits, ...urlOnly]
   }, [favorites, q])
 
+  /** 管理页内搜索快捷方式：名称或路径包含即命中，名称命中的排在前 */
+  const filteredShortcuts = useMemo(() => {
+    const t = sq.trim().toLowerCase()
+    if (!t) {
+      return shortcuts
+    }
+    const nameHits: ShortcutItem[] = []
+    const pathOnly: ShortcutItem[] = []
+    for (const s of shortcuts) {
+      const nameOk = s.name.toLowerCase().includes(t)
+      const pathOk = s.path.toLowerCase().includes(t)
+      if (nameOk) {
+        nameHits.push(s)
+      } else if (pathOk) {
+        pathOnly.push(s)
+      }
+    }
+    nameHits.sort(compareShortcut)
+    pathOnly.sort(compareShortcut)
+    return [...nameHits, ...pathOnly]
+  }, [shortcuts, sq])
+
   /** 先乐观更新界面，再落盘；浏览器预览只改内存 */
   const persistAll = useCallback(
     (next: FavoriteItem[], okMsg: string) => {
@@ -248,6 +286,90 @@ export function AdminView() {
     const k = makeRowKey(f)
     const next = favorites.filter((x) => makeRowKey(x) !== k)
     persistAll(next, '已删除')
+  }
+
+  /** 快捷方式先乐观更新界面，再落盘；浏览器预览只改内存 */
+  const persistShortcuts = useCallback(
+    (next: ShortcutItem[], okMsg: string) => {
+      setShortcuts([...next].sort(compareShortcut))
+      if (!isTauriWebview()) {
+        ;(window.messageApi ?? messageFromHook).info('预览模式：数据仅保存在内存中')
+        return
+      }
+      void (async () => {
+        try {
+          await invoke('save_shortcuts_replace', { items: next })
+          ;(window.messageApi ?? messageFromHook).success(okMsg)
+        } catch (e) {
+          console.error(e)
+          // 落盘失败时回读磁盘，避免界面与磁盘不一致
+          await invoke<ShortcutItem[]>('get_shortcuts_from_disk')
+            .then((list) => setShortcuts([...list].sort(compareShortcut)))
+            .catch(() => {})
+          ;(window.messageApi ?? messageFromHook).error(String(e))
+        }
+      })()
+    },
+    [messageFromHook],
+  )
+
+  const onShortcutDelete = (s: ShortcutItem) => {
+    const k = makeShortcutRowKey(s)
+    const next = shortcuts.filter((x) => makeShortcutRowKey(x) !== k)
+    persistShortcuts(next, '已删除')
+  }
+
+  const closeShortcutModal = () => {
+    setShortcutModalOpen(false)
+    setEditingShortcut(null)
+    setScDraftName('')
+    setScDraftPath('')
+  }
+
+  /** 提交快捷方式表单：新增或编辑；路径不存在时提示但仍允许保存（移动硬盘/网络盘可能临时不可用） */
+  const submitShortcutRow = () => {
+    const name = scDraftName.trim()
+    const path = scDraftPath.trim()
+    const messageApi = window.messageApi ?? messageFromHook
+    if (name.length === 0) {
+      messageApi.warning('请填写名称')
+      return
+    }
+    if (path.length === 0) {
+      messageApi.warning('请填写或选择位置')
+      return
+    }
+    if (/^https?:\/\//i.test(path)) {
+      messageApi.warning('位置须为本地文件夹或文件路径，网址请添加到书签')
+      return
+    }
+    void (async () => {
+      let exists = true
+      if (isTauriWebview()) {
+        exists = await invoke<boolean>('local_path_exists_cmd', { path }).catch(() => true)
+      }
+      if (editingShortcut) {
+        const k0 = makeShortcutRowKey(editingShortcut)
+        const next = shortcuts.map((x) => {
+          if (makeShortcutRowKey(x) === k0) {
+            return { name, path, addTime: editingShortcut.addTime }
+          }
+          return x
+        })
+        persistShortcuts(next, exists ? '已保存编辑' : '已保存编辑（注意：位置当前不存在）')
+        closeShortcutModal()
+        return
+      }
+      const addTime = dayjs().format('YYYY-MM-DD HH:mm:ss')
+      const add: ShortcutItem = { name, path, addTime }
+      const existsDup = shortcuts.some((s) => makeShortcutRowKey(s) === makeShortcutRowKey(add))
+      if (existsDup) {
+        messageApi.warning('已存在相同时间+名称+位置')
+        return
+      }
+      persistShortcuts([add, ...shortcuts], exists ? '已添加' : '已添加（注意：位置当前不存在）')
+      closeShortcutModal()
+    })()
   }
 
   const closeBookmarkModal = () => {
@@ -487,6 +609,68 @@ export function AdminView() {
     })()
   }
 
+  const onImportShortcuts = () => {
+    if (!isTauriWebview()) {
+      ;(window.messageApi ?? messageFromHook).info('浏览器预览模式不支持导入')
+      return
+    }
+    void (async () => {
+      const f = await open({ filters: [{ name: 'JSON', extensions: ['json'] }], multiple: false })
+      if (f == null) {
+        return
+      }
+      const p = Array.isArray(f) ? f[0] : f
+      if (!p) {
+        return
+      }
+      try {
+        await invoke('import_shortcuts_path', { path: p })
+        await load()
+        ;(window.messageApi ?? messageFromHook).success('导入已覆盖并写入磁盘')
+      } catch (e) {
+        ;(window.messageApi ?? messageFromHook).error(String(e))
+      }
+    })()
+  }
+
+  const onExportShortcuts = () => {
+    if (!isTauriWebview()) {
+      ;(window.messageApi ?? messageFromHook).info('浏览器预览模式不支持导出')
+      return
+    }
+    void (async () => {
+      const p = await save({
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+        defaultPath: 'shortcuts.json',
+      })
+      if (p == null) {
+        return
+      }
+      try {
+        await invoke('export_shortcuts_path', { path: p })
+        ;(window.messageApi ?? messageFromHook).success('已导出')
+      } catch (e) {
+        ;(window.messageApi ?? messageFromHook).error(String(e))
+      }
+    })()
+  }
+
+  /** 用资源管理器的双击语义打开快捷方式（文件夹进目录、文件走默认程序） */
+  const onOpenShortcutPath = (path: string) => {
+    void (async () => {
+      if (!isTauriWebview()) {
+        ;(window.messageApi ?? messageFromHook).info('浏览器预览模式不支持打开本地路径')
+        return
+      }
+      try {
+        await invoke('launch_app_cmd', { target: path })
+      } catch (e) {
+        console.error(e)
+        ;(window.messageApi ?? messageFromHook).error(`打开失败：${String(e)}`)
+      }
+    })()
+  }
+
   /** 在系统浏览器中打开书签（Windows 走前台友好的 FileProtocolHandler） */
   const onOpenBookmarkUrl = (rawUrl: string) => {
     void (async () => {
@@ -518,6 +702,37 @@ export function AdminView() {
       setDraftUrl('')
     }
     setBookmarkModalOpen(true)
+  }
+
+  const openShortcutModal = (item?: ShortcutItem) => {
+    if (item) {
+      setEditingShortcut(item)
+      setScDraftName(item.name)
+      setScDraftPath(item.path)
+    } else {
+      setEditingShortcut(null)
+      setScDraftName('')
+      setScDraftPath('')
+    }
+    setShortcutModalOpen(true)
+  }
+
+  /** 通过系统对话框选择文件/文件夹填入路径 */
+  const pickShortcutPath = (pickDirectory: boolean) => {
+    void (async () => {
+      const f = await open({
+        directory: pickDirectory,
+        multiple: false,
+        filters: pickDirectory ? undefined : [{ name: '所有文件', extensions: ['*'] }],
+      })
+      if (f == null) {
+        return
+      }
+      const p = Array.isArray(f) ? f[0] : f
+      if (p) {
+        setScDraftPath(p)
+      }
+    })()
   }
 
   const copyDataDir = () => {
@@ -573,6 +788,13 @@ export function AdminView() {
           >
             书签管理
           </NavButton>
+          <NavButton
+            active={section === 'shortcuts'}
+            icon={<Zap size={17} />}
+            onClick={() => setSection('shortcuts')}
+          >
+            快捷方式管理
+          </NavButton>
         </nav>
 
         <div className='border-t border-hairline p-4'>
@@ -612,7 +834,7 @@ export function AdminView() {
                 onCopyDataDir={copyDataDir}
               />
             </div>
-          ) : (
+          ) : section === 'bookmarks' ? (
             <BookmarksSection
               q={q}
               setQ={setQ}
@@ -624,6 +846,19 @@ export function AdminView() {
               onOpenEdit={(f) => openBookmarkModal(f)}
               onDelete={onDelete}
               onOpenUrl={onOpenBookmarkUrl}
+            />
+          ) : (
+            <ShortcutsSection
+              q={sq}
+              setQ={setSq}
+              filtered={filteredShortcuts}
+              totalCount={shortcuts.length}
+              onImport={onImportShortcuts}
+              onExport={onExportShortcuts}
+              onOpenAdd={() => openShortcutModal()}
+              onOpenEdit={(s) => openShortcutModal(s)}
+              onDelete={onShortcutDelete}
+              onOpenPath={onOpenShortcutPath}
             />
           )}
         </div>
@@ -681,6 +916,97 @@ export function AdminView() {
             <button
               type='button'
               onClick={closeBookmarkModal}
+              className='flex-1 rounded-lg border border-hairline bg-white px-4 py-2 text-[13px] font-medium text-graphite-700 transition-colors hover:bg-paper-50'
+            >
+              取消
+            </button>
+            <button
+              type='submit'
+              className='flex-1 rounded-lg bg-graphite-900 px-4 py-2 text-[13px] font-medium text-white shadow-sm transition-colors hover:bg-graphite-800'
+            >
+              保存
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        title={
+          <span className='text-[15px] font-semibold'>
+            {editingShortcut ? '编辑快捷方式' : '新建快捷方式'}
+          </span>
+        }
+        open={shortcutModalOpen}
+        onCancel={closeShortcutModal}
+        footer={null}
+        closeIcon={<X size={18} className='text-graphite-400' />}
+        width={440}
+        centered
+        destroyOnClose
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            submitShortcutRow()
+          }}
+          className='space-y-4 pt-1'
+        >
+          <div>
+            <label
+              htmlFor='sc-name'
+              className='mb-1.5 block text-[12px] font-medium text-graphite-500'
+            >
+              名称
+            </label>
+            <input
+              id='sc-name'
+              autoFocus
+              value={scDraftName}
+              onChange={(e) => setScDraftName(e.currentTarget.value)}
+              placeholder='例如：项目仓库（支持拼音搜索）'
+              className='w-full rounded-lg border border-hairline bg-paper-50/60 px-3 py-2 text-[13px] outline-none transition focus:border-jade-400 focus:bg-white focus:ring-2 focus:ring-jade-400/20'
+            />
+          </div>
+          <div>
+            <label
+              htmlFor='sc-path'
+              className='mb-1.5 block text-[12px] font-medium text-graphite-500'
+            >
+              位置
+            </label>
+            <input
+              id='sc-path'
+              value={scDraftPath}
+              onChange={(e) => setScDraftPath(e.currentTarget.value)}
+              placeholder='本地文件夹或文件路径，如 D:\projects'
+              className='w-full rounded-lg border border-hairline bg-paper-50/60 px-3 py-2 font-mono text-[12.5px] outline-none transition focus:border-jade-400 focus:bg-white focus:ring-2 focus:ring-jade-400/20'
+            />
+            <div className='mt-2 flex gap-2'>
+              <button
+                type='button'
+                onClick={() => pickShortcutPath(false)}
+                className='flex items-center gap-1.5 rounded-lg border border-hairline bg-white px-2.5 py-1.5 text-[12px] font-medium text-graphite-700 transition-colors hover:bg-paper-50'
+              >
+                <File size={13} />
+                选择文件
+              </button>
+              <button
+                type='button'
+                onClick={() => pickShortcutPath(true)}
+                className='flex items-center gap-1.5 rounded-lg border border-hairline bg-white px-2.5 py-1.5 text-[12px] font-medium text-graphite-700 transition-colors hover:bg-paper-50'
+              >
+                <Folder size={13} />
+                选择文件夹
+              </button>
+            </div>
+            <p className='mt-2 text-[11.5px] leading-relaxed text-graphite-400'>
+              保存后在搜索条输入名称（含拼音首字母）即可回车打开；网址请添加到书签。
+            </p>
+          </div>
+          <div className='flex gap-2.5 pt-2'>
+            <button
+              type='button'
+              onClick={closeShortcutModal}
               className='flex-1 rounded-lg border border-hairline bg-white px-4 py-2 text-[13px] font-medium text-graphite-700 transition-colors hover:bg-paper-50'
             >
               取消
@@ -1094,6 +1420,215 @@ function compareFav(a: FavoriteItem, b: FavoriteItem) {
 
 function makeRowKey(f: FavoriteItem) {
   return `${f.addTime}::${f.title}::${f.url}`
+}
+
+function compareShortcut(a: ShortcutItem, b: ShortcutItem) {
+  if (a.addTime === b.addTime) {
+    return b.name.localeCompare(a.name, 'zh-CN')
+  }
+  return b.addTime.localeCompare(a.addTime, 'zh-Hans', { numeric: true })
+}
+
+function makeShortcutRowKey(s: ShortcutItem) {
+  return `${s.addTime}::${s.name}::${s.path}`
+}
+
+/** 快捷方式管理：与书签管理同构的列表 + 悬停操作 + 删除确认；位置为本地文件夹或文件 */
+function ShortcutsSection({
+  q,
+  setQ,
+  filtered,
+  totalCount,
+  onImport,
+  onExport,
+  onOpenAdd,
+  onOpenEdit,
+  onDelete,
+  onOpenPath,
+}: {
+  q: string
+  setQ: (s: string) => void
+  filtered: ShortcutItem[]
+  totalCount: number
+  onImport: () => void
+  onExport: () => void
+  onOpenAdd: () => void
+  onOpenEdit: (s: ShortcutItem) => void
+  onDelete: (s: ShortcutItem) => void
+  onOpenPath: (path: string) => void
+}) {
+  return (
+    <div className='flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden'>
+      <header className='flex shrink-0 flex-wrap items-start justify-between gap-3'>
+        <div className='min-w-0'>
+          <h2 className='text-[20px] font-semibold leading-7'>快捷方式管理</h2>
+          <p className='mt-1 text-[13px] text-graphite-500'>
+            {q.trim() ? (
+              <>
+                匹配 {filtered.length} 条 · 共 {totalCount} 条快捷方式
+              </>
+            ) : (
+              <>共 {totalCount} 条快捷方式 · 最近添加的在前</>
+            )}
+          </p>
+        </div>
+        <div className='flex shrink-0 items-center gap-2'>
+          <button
+            type='button'
+            onClick={onImport}
+            title='导入 JSON（将覆盖现有快捷方式）'
+            className='flex items-center gap-1.5 rounded-lg border border-hairline bg-white px-3 py-2 text-[12.5px] font-medium text-graphite-700 transition-colors hover:bg-paper-50'
+          >
+            <Upload size={15} />
+            导入
+          </button>
+          <button
+            type='button'
+            onClick={onExport}
+            title='导出 JSON'
+            className='flex items-center gap-1.5 rounded-lg border border-hairline bg-white px-3 py-2 text-[12.5px] font-medium text-graphite-700 transition-colors hover:bg-paper-50'
+          >
+            <Download size={15} />
+            导出
+          </button>
+          <button
+            type='button'
+            onClick={onOpenAdd}
+            className='flex items-center gap-1.5 rounded-lg bg-graphite-900 px-3.5 py-2 text-[12.5px] font-medium text-white shadow-sm transition-colors hover:bg-graphite-800'
+          >
+            <Plus size={15} />
+            添加快捷方式
+          </button>
+        </div>
+      </header>
+
+      <div className='relative mt-5 shrink-0'>
+        <Search
+          size={16}
+          className='pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-graphite-400'
+        />
+        <input
+          type='search'
+          value={q}
+          onChange={(e) => setQ(e.currentTarget.value)}
+          placeholder='搜索名称或路径'
+          className='w-full rounded-lg border border-hairline bg-white py-2.5 pl-9 pr-9 text-[13px] outline-none transition placeholder:text-graphite-400 focus:border-jade-400 focus:ring-2 focus:ring-jade-400/20 [&::-webkit-search-cancel-button]:hidden'
+        />
+        {q ? (
+          <button
+            type='button'
+            onClick={() => setQ('')}
+            title='清除搜索'
+            className='absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-graphite-400 transition-colors hover:bg-paper-50 hover:text-graphite-700'
+          >
+            <X size={14} />
+          </button>
+        ) : null}
+      </div>
+
+      <div className='mt-4 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-hairline bg-white'>
+        <div className='admin-scroll min-h-0 flex-1 overflow-auto overscroll-contain'>
+          {filtered.map((shortcut) => {
+            const rowKey = makeShortcutRowKey(shortcut)
+            return (
+              <div
+                key={rowKey}
+                className='group flex items-center gap-3 border-b border-hairline px-4 py-3 transition-colors last:border-b-0 hover:bg-paper-50'
+              >
+                <Seal
+                  url={shortcut.path}
+                  title={shortcut.name}
+                  variant='light'
+                  className='h-9 w-9 rounded-[10px] text-[14px]'
+                />
+                <div className='min-w-0 flex-1'>
+                  <div className='truncate text-[13.5px] font-medium leading-5 text-graphite-900'>
+                    {shortcut.name}
+                  </div>
+                  <div className='truncate font-mono text-[11.5px] leading-4 text-graphite-400'>
+                    {shortcut.path}
+                  </div>
+                </div>
+                <div
+                  className='hidden w-28 shrink-0 text-right text-[12px] tabular-nums text-graphite-400 sm:block'
+                  title={shortcut.addTime}
+                >
+                  {relativeFrom(shortcut.addTime)}
+                </div>
+                <div className='flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100'>
+                  <button
+                    type='button'
+                    title='打开'
+                    onClick={() => onOpenPath(shortcut.path)}
+                    className='rounded-md p-1.5 text-graphite-400 transition-colors hover:bg-jade-50 hover:text-jade-700'
+                  >
+                    <ExternalLink size={15} />
+                  </button>
+                  <button
+                    type='button'
+                    title='编辑'
+                    onClick={() => onOpenEdit(shortcut)}
+                    className='rounded-md p-1.5 text-graphite-400 transition-colors hover:bg-paper-100 hover:text-graphite-900'
+                  >
+                    <Edit2 size={15} />
+                  </button>
+                  <Popconfirm
+                    title='删除快捷方式'
+                    description={`确定删除「${shortcut.name}」吗？`}
+                    okText='删除'
+                    cancelText='取消'
+                    okButtonProps={{ danger: true }}
+                    onConfirm={() => onDelete(shortcut)}
+                  >
+                    <button
+                      type='button'
+                      title='删除'
+                      className='rounded-md p-1.5 text-graphite-400 transition-colors hover:bg-red-50 hover:text-red-600'
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </Popconfirm>
+                </div>
+              </div>
+            )
+          })}
+
+          {totalCount === 0 ? (
+            <div className='flex flex-col items-center justify-center px-6 py-16 text-center'>
+              <span aria-hidden className='h-3 w-3 rotate-45 rounded-[4px] bg-jade-300' />
+              <div className='mt-4 text-[14px] font-medium text-graphite-900'>还没有快捷方式</div>
+              <p className='mt-1.5 max-w-xs text-[12.5px] leading-relaxed text-graphite-400'>
+                添加常用文件夹或文件，之后随时按全局快捷键唤起搜索条，输入名称直达。
+              </p>
+              <button
+                type='button'
+                onClick={onOpenAdd}
+                className='mt-5 flex items-center gap-1.5 rounded-lg bg-graphite-900 px-3.5 py-2 text-[12.5px] font-medium text-white shadow-sm transition-colors hover:bg-graphite-800'
+              >
+                <Plus size={15} />
+                添加快捷方式
+              </button>
+            </div>
+          ) : null}
+
+          {totalCount > 0 && filtered.length === 0 ? (
+            <div className='flex flex-col items-center justify-center px-6 py-16 text-center'>
+              <div className='text-[14px] font-medium text-graphite-900'>
+                没有匹配“{q.trim()}”的快捷方式
+              </div>
+              <button
+                type='button'
+                onClick={() => setQ('')}
+                className='mt-3 rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] font-medium text-graphite-700 transition-colors hover:bg-paper-50'
+              >
+                清除搜索
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 export function AdminRoot() {

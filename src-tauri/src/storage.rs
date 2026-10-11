@@ -15,6 +15,18 @@ pub struct FavoriteItem {
   pub add_time: String,
 }
 
+/// 单条快捷方式，与 `shortcuts.json` 中字段名一致
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShortcutItem {
+  /// 用户自定义名称，搜索条按它匹配
+  pub name: String,
+  /// 本地文件夹或文件的绝对路径
+  pub path: String,
+  /// 显示与存储格式 YYYY-MM-DD HH:mm:ss
+  #[serde(rename = "addTime")]
+  pub add_time: String,
+}
+
 /// 与 exe 同级的应用配置
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConfig {
@@ -44,6 +56,10 @@ fn favorites_path(dir: &Path) -> std::path::PathBuf {
   dir.join("favorites.json")
 }
 
+fn shortcuts_path(dir: &Path) -> std::path::PathBuf {
+  dir.join("shortcuts.json")
+}
+
 fn app_config_path(dir: &Path) -> std::path::PathBuf {
   dir.join("app.json")
 }
@@ -60,6 +76,23 @@ pub fn load_or_init_favorites(dir: &Path) -> std::io::Result<Vec<FavoriteItem>> 
     Error::new(
       ErrorKind::InvalidData,
       format!("favorites.json 解析失败: {e}"),
+    )
+  })?;
+  Ok(list)
+}
+
+/// 若不存在则写入默认 `[]`
+pub fn load_or_init_shortcuts(dir: &Path) -> std::io::Result<Vec<ShortcutItem>> {
+  let p = shortcuts_path(dir);
+  if !p.exists() {
+    std::fs::write(&p, b"[]")?;
+    return Ok(vec![]);
+  }
+  let s = std::fs::read_to_string(&p)?;
+  let list: Vec<ShortcutItem> = serde_json::from_str(&s).map_err(|e| {
+    Error::new(
+      ErrorKind::InvalidData,
+      format!("shortcuts.json 解析失败: {e}"),
     )
   })?;
   Ok(list)
@@ -89,6 +122,12 @@ pub fn save_favorites_to_disk(dir: &Path, items: &[FavoriteItem]) -> std::io::Re
   let s = serde_json::to_string_pretty(items)
     .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
   std::fs::write(favorites_path(dir), s)
+}
+
+pub fn save_shortcuts_to_disk(dir: &Path, items: &[ShortcutItem]) -> std::io::Result<()> {
+  let s = serde_json::to_string_pretty(items)
+    .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
+  std::fs::write(shortcuts_path(dir), s)
 }
 
 pub fn save_app_config_to_disk(dir: &Path, c: &AppConfig) -> std::io::Result<()> {
@@ -159,6 +198,59 @@ pub fn parse_and_validate_favorites_json(data: &str) -> Result<Vec<FavoriteItem>
     out.push(FavoriteItem {
       title: title.to_string(),
       url: url.to_string(),
+      add_time: add_time.to_string(),
+    });
+  }
+  Ok(out)
+}
+
+/// 导入前校验，通过后再覆盖写入；位置只接受本地路径，不接受 URL（网址走书签）
+pub fn parse_and_validate_shortcuts_json(data: &str) -> Result<Vec<ShortcutItem>, ImportError> {
+  let v: serde_json::Value = serde_json::from_str(data)?;
+  let arr = v
+    .as_array()
+    .ok_or_else(|| ImportError::NotArray("根节点须为数组".to_string()))?;
+  let mut out = Vec::new();
+  for (i, item) in arr.iter().enumerate() {
+    let o = item
+      .as_object()
+      .ok_or_else(|| ImportError::Item(i + 1, "须为对象".to_string()))?;
+    let name = o
+      .get("name")
+      .and_then(|v| v.as_str())
+      .ok_or_else(|| ImportError::Item(i + 1, "缺少 name 或类型错误".to_string()))?
+      .trim();
+    if name.is_empty() {
+      return Err(ImportError::Item(i + 1, "name 不能为空".to_string()));
+    }
+    let path = o
+      .get("path")
+      .and_then(|v| v.as_str())
+      .ok_or_else(|| ImportError::Item(i + 1, "缺少 path 或类型错误".to_string()))?
+      .trim();
+    if path.is_empty() {
+      return Err(ImportError::Item(i + 1, "path 不能为空".to_string()));
+    }
+    if path.starts_with("http://") || path.starts_with("https://") {
+      return Err(ImportError::Item(
+        i + 1,
+        "path 须为本地文件夹或文件路径，网址请添加到书签".to_string(),
+      ));
+    }
+    let add_time = o
+      .get("addTime")
+      .and_then(|v| v.as_str())
+      .ok_or_else(|| ImportError::Item(i + 1, "缺少 addTime 或类型错误".to_string()))?
+      .trim();
+    if !is_valid_add_time(add_time) {
+      return Err(ImportError::Item(
+        i + 1,
+        format!("addTime 须为 {TIME_FMT}"),
+      ));
+    }
+    out.push(ShortcutItem {
+      name: name.to_string(),
+      path: path.to_string(),
       add_time: add_time.to_string(),
     });
   }

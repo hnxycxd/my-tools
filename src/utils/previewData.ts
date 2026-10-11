@@ -1,5 +1,6 @@
 import type { AppEntry } from '../types/app'
 import type { AppConfig, FavoriteItem } from '../types/favorite'
+import type { ShortcutItem } from '../types/shortcut'
 
 /**
  * 浏览器直连 Vite 预览时的示例数据：Tauri WebView 内不会使用，
@@ -20,6 +21,12 @@ export const PREVIEW_CONFIG: AppConfig = {
   global_shortcut: 'Alt+Space',
   autostart: false,
 }
+
+export const PREVIEW_SHORTCUTS: ShortcutItem[] = [
+  { name: '项目仓库', path: 'D:\\repo\\project', addTime: '2026-09-12 10:20:00' },
+  { name: '下载目录', path: 'C:\\Users\\you\\Downloads', addTime: '2026-09-11 18:05:00' },
+  { name: 'Hosts 文件', path: 'C:\\Windows\\System32\\drivers\\etc\\hosts', addTime: '2026-09-09 09:30:00' },
+]
 
 export const PREVIEW_APPS: AppEntry[] = [
   { name: '记事本', target: 'C:\\Windows\\System32\\notepad.exe' },

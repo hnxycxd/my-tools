@@ -13,8 +13,9 @@ struct AboutInfo {
 }
 
 use storage::{
-  load_or_init_app_config, load_or_init_favorites, parse_and_validate_favorites_json,
-  save_app_config_to_disk, save_favorites_to_disk, AppConfig, FavoriteItem,
+  load_or_init_app_config, load_or_init_favorites, load_or_init_shortcuts,
+  parse_and_validate_favorites_json, parse_and_validate_shortcuts_json, save_app_config_to_disk,
+  save_favorites_to_disk, save_shortcuts_to_disk, AppConfig, FavoriteItem, ShortcutItem,
 };
 use tauri::Emitter;
 use tauri::image::Image;
@@ -237,6 +238,43 @@ fn export_favorites_path(app: tauri::AppHandle, path: String) -> Result<(), Stri
   let s = serde_json::to_string_pretty(&items).map_err(|e| e.to_string())?;
   std::fs::write(&path, s).map_err(|e| e.to_string())?;
   Ok(())
+}
+
+/// 快捷方式管理用：从磁盘重读；palette 每次唤起读盘，管理页保存后立即生效
+#[tauri::command]
+fn get_shortcuts_from_disk(app: tauri::AppHandle) -> Result<Vec<ShortcutItem>, String> {
+  let dir = data_dir_from_state(&app)?;
+  load_or_init_shortcuts(&dir).map_err(|e| e.to_string())
+}
+
+/// 保存快捷方式：整表覆盖写入磁盘（与收藏一致）
+#[tauri::command]
+fn save_shortcuts_replace(app: tauri::AppHandle, items: Vec<ShortcutItem>) -> Result<(), String> {
+  let dir = data_dir_from_state(&app)?;
+  save_shortcuts_to_disk(&dir, &items).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn import_shortcuts_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
+  let dir = data_dir_from_state(&app)?;
+  let data = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+  let items = parse_and_validate_shortcuts_json(&data).map_err(|e| e.to_string())?;
+  save_shortcuts_to_disk(&dir, &items).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn export_shortcuts_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
+  let dir = data_dir_from_state(&app)?;
+  let items = load_or_init_shortcuts(&dir).map_err(|e| e.to_string())?;
+  let s = serde_json::to_string_pretty(&items).map_err(|e| e.to_string())?;
+  std::fs::write(&path, s).map_err(|e| e.to_string())?;
+  Ok(())
+}
+
+/// 保存前的存在性校验：不存在时前端仅提示不阻断（U 盘/网络盘可能临时不可用）
+#[tauri::command]
+fn local_path_exists_cmd(path: String) -> bool {
+  std::path::Path::new(&path).exists()
 }
 
 /// 在系统默认浏览器中打开 URL；Windows 用 `url.dll,FileProtocolHandler` 替代 detached 打开，便于浏览器窗口拿到前台
@@ -505,6 +543,11 @@ pub fn run() {
       save_app_config_cmd,
       import_favorites_path,
       export_favorites_path,
+      get_shortcuts_from_disk,
+      save_shortcuts_replace,
+      import_shortcuts_path,
+      export_shortcuts_path,
+      local_path_exists_cmd,
       open_url_in_system_browser,
       reapply_global_shortcut_from_config,
       start_hotkey_recording_probe,

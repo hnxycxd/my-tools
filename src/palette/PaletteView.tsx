@@ -4,12 +4,19 @@ import { match as pinyinMatch } from 'pinyin-pro'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppEntry } from '../types/app'
 import type { FavoriteItem } from '../types/favorite'
+import type { ShortcutItem } from '../types/shortcut'
 import { isTauriWebview } from '../utils/tauriEnv'
-import { PREVIEW_APP_ICONS, PREVIEW_APPS, PREVIEW_FAVORITES } from '../utils/previewData'
+import {
+  PREVIEW_APP_ICONS,
+  PREVIEW_APPS,
+  PREVIEW_FAVORITES,
+  PREVIEW_SHORTCUTS,
+} from '../utils/previewData'
 import { Seal } from '../components/Seal'
 
 type PaletteRow =
   | { kind: 'fav'; item: FavoriteItem }
+  | { kind: 'shortcut'; item: ShortcutItem }
   | { kind: 'app'; name: string; target: string }
   | { kind: 'web'; url: string; title: string; subtitle: string }
   | { kind: 'cmd'; title: string; subtitle: string }
@@ -39,7 +46,7 @@ function nameMatch(name: string, k: string): { hit: boolean; fromStart: boolean 
 
 /**
  * 速开：紧凑置顶窗口（无全屏蒙层），失焦即关。
- * 深墨面板 + 玉色点缀；输入过滤收藏与本机应用，支持网址直达与必应搜索。
+ * 深墨面板 + 玉色点缀；输入过滤收藏、快捷方式与本机应用，支持网址直达与必应搜索。
  */
 export function PaletteView() {
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -49,8 +56,9 @@ export function PaletteView() {
   const [popKey, setPopKey] = useState(0)
 
   const [items, setItems] = useState<FavoriteItem[]>([])
+  const [shortcuts, setShortcuts] = useState<ShortcutItem[]>([])
   const [apps, setApps] = useState<AppEntry[]>([])
-  /** 快捷方式路径 → 应用图标 data URI；仅当前命中的行才会请求 */
+  /** 路径（应用 .lnk / 快捷方式目标）→ 图标 data URI；仅当前命中的行才会请求 */
   const [appIcons, setAppIcons] = useState<Record<string, string>>(() =>
     isTauriWebview() ? {} : PREVIEW_APP_ICONS,
   )
@@ -64,12 +72,16 @@ export function PaletteView() {
   const load = useCallback(() => {
     if (!isTauriWebview()) {
       setItems(PREVIEW_FAVORITES)
+      setShortcuts(PREVIEW_SHORTCUTS)
       setApps(PREVIEW_APPS)
       return
     }
     // 直接读磁盘最新数据，避免仅依赖启动快照导致跨机器/长驻进程不一致
     void invoke<FavoriteItem[]>('get_favorites_from_disk')
       .then((list) => setItems(list))
+      .catch(console.error)
+    void invoke<ShortcutItem[]>('get_shortcuts_from_disk')
+      .then((list) => setShortcuts(list))
       .catch(console.error)
     void invoke<AppEntry[]>('list_installed_apps_cmd')
       .then((list) => setApps(list))
@@ -115,26 +127,49 @@ export function PaletteView() {
     return [...starts, ...incl].slice(0, 6)
   }, [apps, raw])
 
-  /** 命中的本机应用惰性提取图标：Rust 侧有进程内缓存，会话内每个应用只请求一次 */
+  /** 快捷方式仅按名称（含拼音/首字母）匹配，路径只作副标题展示；用户自行维护、数量有限，不设上限 */
+  const shortcutMatches = useMemo(() => {
+    const k = raw.trim().toLowerCase()
+    if (k.length === 0) {
+      return []
+    }
+    const starts: ShortcutItem[] = []
+    const incl: ShortcutItem[] = []
+    for (const s of shortcuts) {
+      const m = nameMatch(s.name, k)
+      if (m.fromStart) {
+        starts.push(s)
+      } else if (m.hit) {
+        incl.push(s)
+      }
+    }
+    return [...starts, ...incl]
+  }, [shortcuts, raw])
+
+  /** 命中的本机应用/快捷方式惰性提取图标：Rust 侧有进程内缓存，会话内每个路径只请求一次 */
   const iconRequested = useRef<Set<string>>(new Set())
   useEffect(() => {
     if (!isTauriWebview()) {
       return
     }
-    for (const a of appMatches) {
-      if (iconRequested.current.has(a.target)) {
+    const targets = [
+      ...appMatches.map((a) => a.target),
+      ...shortcutMatches.map((s) => s.path),
+    ]
+    for (const target of targets) {
+      if (iconRequested.current.has(target)) {
         continue
       }
-      iconRequested.current.add(a.target)
-      void invoke<string | null>('get_app_icon_cmd', { target: a.target })
+      iconRequested.current.add(target)
+      void invoke<string | null>('get_app_icon_cmd', { target })
         .then((uri) => {
           if (uri) {
-            setAppIcons((m) => ({ ...m, [a.target]: uri }))
+            setAppIcons((m) => ({ ...m, [target]: uri }))
           }
         })
         .catch(console.error)
     }
-  }, [appMatches])
+  }, [appMatches, shortcutMatches])
 
   const trimmedRaw = raw.trim()
   /** 命令统一小写比较，避免大小写输入差异导致命令不生效 */
@@ -154,7 +189,11 @@ export function PaletteView() {
         },
       ]
     }
+    // 顺序：书签 → 快捷方式 → 本机应用 → 网址/搜索兜底
     const r: PaletteRow[] = filtered.map((item) => ({ kind: 'fav' as const, item }))
+    for (const s of shortcutMatches) {
+      r.push({ kind: 'shortcut', item: s })
+    }
     for (const a of appMatches) {
       r.push({ kind: 'app', name: a.name, target: a.target })
     }
@@ -176,7 +215,7 @@ export function PaletteView() {
       }
     }
     return r
-  }, [filtered, appMatches, typing, rawLooksUrl, trimmedRaw, isAdminCommand])
+  }, [filtered, shortcutMatches, appMatches, typing, rawLooksUrl, trimmedRaw, isAdminCommand])
 
   const selSafe = rows.length === 0 ? 0 : Math.min(sel, rows.length - 1)
 
@@ -237,6 +276,19 @@ export function PaletteView() {
       }
       if (row.kind === 'fav') {
         tryOpen(row.item.url)
+      } else if (row.kind === 'shortcut') {
+        void (async () => {
+          try {
+            if (isTauriWebview()) {
+              // 与本机应用一致：explorer 按双击语义打开，文件夹进目录、文件走默认程序
+              await invoke('launch_app_cmd', { target: row.item.path })
+            }
+          } catch (e) {
+            console.error(e)
+          } finally {
+            await hide()
+          }
+        })()
       } else if (row.kind === 'app') {
         void (async () => {
           try {
@@ -414,7 +466,7 @@ export function PaletteView() {
             <div className='text-[13px] font-medium text-fog-300'>还没有收藏</div>
             <div className='mt-1 text-xs leading-relaxed text-fog-600'>
               输入 <span className='font-mono text-fog-400'>admin</span>{' '}
-              并回车打开管理窗口，把常用网址加进来；也可以直接输入网址，或搜索本机已安装的应用。
+              并回车打开管理窗口，把常用网址、文件夹或文件快捷方式加进来；也可以直接输入网址，或搜索本机已安装的应用。
             </div>
           </div>
         ) : null}
@@ -429,22 +481,41 @@ export function PaletteView() {
             {rows.map((row, idx) => {
               const active = idx === selSafe
               const isSynthetic = row.kind !== 'fav'
-              const prevIsFav = idx > 0 && rows[idx - 1].kind === 'fav'
+              const prevKind = idx > 0 ? rows[idx - 1].kind : null
+              // 分组分隔线：书签与后续组之间、快捷方式与应用之间
+              const showDivider =
+                idx > 0 &&
+                ((prevKind === 'fav' && row.kind !== 'fav') ||
+                  (prevKind === 'shortcut' && row.kind === 'app'))
               const rowTitle =
-                row.kind === 'fav' ? row.item.title : row.kind === 'app' ? row.name : row.title
+                row.kind === 'fav'
+                  ? row.item.title
+                  : row.kind === 'shortcut'
+                    ? row.item.name
+                    : row.kind === 'app'
+                      ? row.name
+                      : row.title
               const rowSub =
-                row.kind === 'fav' ? row.item.url : row.kind === 'app' ? row.target : row.subtitle
+                row.kind === 'fav'
+                  ? row.item.url
+                  : row.kind === 'shortcut'
+                    ? row.item.path
+                    : row.kind === 'app'
+                      ? row.target
+                      : row.subtitle
               return (
                 <li
                   key={
                     row.kind === 'fav'
                       ? `${row.item.addTime}__${row.item.title}__${row.item.url}`
-                      : row.kind === 'app'
-                        ? `app__${row.name}`
-                        : row.kind
+                      : row.kind === 'shortcut'
+                        ? `shortcut__${row.item.name}__${row.item.path}`
+                        : row.kind === 'app'
+                          ? `app__${row.name}`
+                          : row.kind
                   }
                   className={
-                    isSynthetic && prevIsFav
+                    isSynthetic && showDivider
                       ? 'mt-1.5 border-t border-white/[0.06] pt-1.5'
                       : 'mt-0.5 first:mt-0'
                   }
@@ -468,6 +539,24 @@ export function PaletteView() {
                         variant='dark'
                         className='h-8 w-8 rounded-[9px] text-[13px]'
                       />
+                    ) : row.kind === 'shortcut' ? (
+                      appIcons[row.item.path] ? (
+                        <img
+                          src={appIcons[row.item.path]}
+                          alt=''
+                          aria-hidden
+                          draggable={false}
+                          className='h-8 w-8 shrink-0 rounded-[7px] object-contain'
+                        />
+                      ) : (
+                        // 文件夹/文件图标提取失败时的回退：与书签一致的首字印章
+                        <Seal
+                          url={row.item.path}
+                          title={row.item.name}
+                          variant='dark'
+                          className='h-8 w-8 rounded-[9px] text-[13px]'
+                        />
+                      )
                     ) : row.kind === 'app' ? (
                       appIcons[row.target] ? (
                         <img
